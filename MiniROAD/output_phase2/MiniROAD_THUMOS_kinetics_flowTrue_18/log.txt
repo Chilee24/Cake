@@ -1,0 +1,13 @@
+{'model': 'MiniROAD', 'data_name': 'THUMOS', 'task': 'OAD', 'loss': 'NONUNIFORM', 'metric': 'AP', 'optimizer': 'AdamW', 'device': 'cuda', 'feature_pretrained': 'kinetics', 'root_path': 'D:\\project\\DashCam\\data\\thumos14', 'rgb_type': 'rgb_kinetics_resnet50', 'flow_type': 'flow_kinetics_bninception', 'annotation_type': 'target_perframe', 'video_list_path': 'data_info/video_list.json', 'output_path': './output_phase2', 'window_size': 128, 'batch_size': 16, 'test_batch_size': 1, 'num_epoch': 10, 'lr': 1e-05, 'weight_decay': 0.05, 'num_workers': 0, 'dropout': 0.5, 'num_classes': 22, 'embedding_dim': 2048, 'hidden_dim': 1024, 'num_layers': 1, 'stride': 4, 'no_flow': False, 'no_rgb': False, 'phase1_ckpt': 'D:\\project\\DashCam\\MiniROAD\\output_phase2\\MiniROAD_THUMOS_kinetics_flowTrue_6\\ckpts\\best_68.82.pth', 'freeze_backbone': False, 'bg_class_idx': 0, 'warmup_epoch': 1, 'warmup_factor': 0.1, 'warmup_method': 'linear', 'config': 'D:\\project\\DashCam\\MiniROAD\\configs\\thumos_phase1_cls.yaml', 'eval': None, 'amp': False, 'tensorboard': False, 'lr_scheduler': True}
+Dataset: THUMOS,  Model: MiniROAD
+lr:1e-05 | Weight Decay:0.05 | Window Size:128 | Batch Size:16
+Total epoch:10 | Total Params:15.8 M | Optimizer: AdamW
+Output Path:./output_phase2\MiniROAD_THUMOS_kinetics_flowTrue_18
+Processed 184574 frames in 19.7 seconds (9370.5 FPS)
+Epoch 1 mAP: 69.16 | Best mAP: 69.16 at epoch 1, iter 45712 | train_loss: 0.1671, lr: 0.0000010
+Processed 184574 frames in 17.1 seconds (10791.1 FPS)
+Epoch 2 mAP: 69.44 | Best mAP: 69.44 at epoch 2, iter 91424 | train_loss: 0.1578, lr: 0.0000010
+Processed 184574 frames in 18.9 seconds (9746.1 FPS)
+Epoch 3 mAP: 69.54 | Best mAP: 69.54 at epoch 3, iter 137136 | train_loss: 0.1523, lr: 0.0000010
+Processed 184574 frames in 21.6 seconds (8544.3 FPS)
+Epoch 4 mAP: 69.62 | Best mAP: 69.62 at epoch 4, iter 182784 | train_loss: 0.1489, lr: 0.0000010

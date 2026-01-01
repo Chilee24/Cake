@@ -1,0 +1,1 @@
+python main_contras.py --config D:\project\DashCam\MiniROAD\configs\thumos_contrastive.yaml
