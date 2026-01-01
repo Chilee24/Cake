@@ -38,7 +38,7 @@ optimizer: 'AdamW'
 batch_size: 16
 test_batch_size: 16
 num_epoch: 50
-lr: 0.001
+lr: 0.0001
 backbone_lr: 0.0001
 weight_decay: 0.0001
 num_workers: 0
