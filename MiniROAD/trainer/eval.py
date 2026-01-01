@@ -11,152 +11,148 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 from tqdm import tqdm
-
 @EVAL.register("CONTRASTIVE")
 class ContrastiveEvaluator:
     def __init__(self, cfg):
-        """
-        Khởi tạo Evaluator với các tham số từ Config.
-        """
         self.num_classes = cfg['num_classes']
-        # Lấy background index, mặc định là 0
-        self.bg_class_idx = cfg.get('bg_class_idx', 0) 
-        # Cấu hình tính CAC (5% hàng xóm)
+        self.bg_class_idx = cfg.get('bg_class_idx', 0)
         self.k_neighbors_ratio = 0.05 
+        # Batch size xử lý từng phần (512 là an toàn cho VRAM 4GB)
+        self.calc_batch_size = 512 
 
     def __call__(self, val_loader, model, criterion, epoch, writer=None):
-        """
-        Phương thức chính được gọi khi chạy eval.
-        Signature giống hệt hàm val_one_epoch cũ để tương thích với main.py.
-        """
         model.eval()
         total_loss = 0.0
         
-        # Containers để gom dữ liệu
+        # Chỉ lưu Feature và Label trên CPU (nhẹ hơn nhiều so với ma trận hàng xóm)
         all_features = []
         all_labels = []
 
         with torch.no_grad():
-            # --- BƯỚC 1: LOOP QUA TẬP VAL ---
-            # Dùng tqdm để hiển thị tiến độ
+            # --- BƯỚC 1: THU THẬP FEATURE ---
             pbar = tqdm(val_loader, desc=f"Epoch:{epoch} Validating")
-            
             for batch_data in pbar:
-                # Move data to GPU
+                # Move inputs to GPU
                 rgb_anchor = batch_data['rgb_anchor'].cuda(non_blocking=True)
                 flow_anchor = batch_data['flow_anchor'].cuda(non_blocking=True)
                 rgb_shuff = batch_data['rgb_shuff'].cuda(non_blocking=True)
                 flow_shuff = batch_data['flow_shuff'].cuda(non_blocking=True)
                 labels = batch_data['labels'].cuda(non_blocking=True)
 
-                # Forward Pass
+                # Forward để lấy feature và loss
                 out_dict = model(rgb_anchor, flow_anchor, rgb_shuff, flow_shuff, labels)
-
-                # Tính Loss (để tham khảo)
                 loss = criterion(out_dict, labels)
                 total_loss += loss.item()
 
-                # Thu thập Feature từ Teacher (k_cls)
-                # k_cls đã được normalize trong model (L2 norm)
-                k_cls = out_dict['k_cls']
+                # Đưa feature về CPU ngay lập tức
+                k_cls = out_dict['k_cls'].detach().cpu() 
+                labels_cpu = labels.detach().cpu()
                 
                 all_features.append(k_cls)
-                all_labels.append(labels)
+                all_labels.append(labels_cpu)
 
-        # --- BƯỚC 2: CHUẨN BỊ DỮ LIỆU TÍNH METRIC ---
-        # Nối các batch lại thành 1 Tensor lớn
+        # Gộp thành Tensor lớn [N, Dim]
         all_features = torch.cat(all_features, dim=0)
         all_labels = torch.cat(all_labels, dim=0)
         
-        avg_loss = total_loss / len(val_loader)
         n_samples = all_features.shape[0]
+        avg_loss = total_loss / len(val_loader)
 
-        print(f"--> [Val] Calculating Distance Matrix for {n_samples} samples...")
+        print(f"--> [Val] Calculating CAC Streaming for {n_samples} samples...")
 
-        # Tính Ma trận khoảng cách Euclidean (Distance Matrix)
-        # Feature đã normalize -> Euclidean distance tương đương Cosine distance về thứ tự
-        # Dùng GPU để tính cho nhanh, sau đó đẩy về CPU
-        dist_matrix = torch.cdist(all_features, all_features, p=2)
-        
-        # Chuyển về CPU numpy để xử lý logic index (tránh OOM GPU nếu data lớn)
-        dist_matrix_np = dist_matrix.cpu().numpy()
-        all_labels_np = all_labels.cpu().numpy()
+        # --- BƯỚC 2: TÍNH CAC STREAMING (KHÔNG LƯU MA TRẬN HÀNG XÓM) ---
+        cac_score = self._calculate_cac_streaming(all_features, all_labels)
 
-        # --- BƯỚC 3: TÍNH CAC & CAD ---
-        cac_score = self._calculate_cac_multiclass(dist_matrix_np, all_labels_np)
-        cad_score = self._calculate_cad_multiclass(dist_matrix_np, all_labels_np)
+        print(f"--> [Val Epoch {epoch}] Loss: {avg_loss:.4f} | CAC (Action): {cac_score:.2f}%")
 
-        print(f"--> [Val Epoch {epoch}] Loss: {avg_loss:.4f} | CAC (Action): {cac_score:.2f}% | CAD (Action): {cad_score:.4f}")
-
-        # --- BƯỚC 4: LOGGING ---
         if writer is not None:
             writer.add_scalar("Val/Loss", avg_loss, epoch)
             writer.add_scalar("Val/CAC_Action", cac_score, epoch)
-            writer.add_scalar("Val/CAD_Action", cad_score, epoch)
 
         return cac_score
 
-    def _calculate_cac_multiclass(self, dist_matrix, labels):
+    def _calculate_cac_streaming(self, all_features, all_labels):
         """
-        Helper: Tính Class Alignment Consistency (CAC).
+        Tính CAC theo kiểu 'Streaming': Tính đến đâu cộng dồn đến đó, 
+        không bao giờ lưu toàn bộ ma trận hàng xóm.
         """
-        n_samples = dist_matrix.shape[0]
-        # Số lượng hàng xóm cần xét (ví dụ 5%)
-        k_neighbors = max(1, int(n_samples * self.k_neighbors_ratio))
+        n_samples = all_features.shape[0]
+        k = max(1, int(n_samples * self.k_neighbors_ratio))
+        k_search = k + 1 # +1 vì topk bao gồm chính nó
+        
+        # Dictionary để cộng dồn kết quả cho từng class
+        # class_idx -> {'sum_consistency': float, 'count': int}
+        class_stats = {c: {'sum': 0.0, 'count': 0} for c in range(self.num_classes)}
+        
+        # Move Reference lên GPU (Toàn bộ dataset làm mốc so sánh)
+        # 157k vector 128-dim ~ 80MB VRAM -> Rất nhẹ
+        ref_features = all_features.cuda()
+        ref_labels = all_labels.cuda()
 
-        # Tìm index của k hàng xóm gần nhất (bỏ cột 0 là chính nó)
-        sorted_indices = np.argsort(dist_matrix, axis=1)[:, 1:k_neighbors+1]
-
-        # Lấy nhãn của các hàng xóm
-        neighbor_labels = labels[sorted_indices]
-
-        cac_per_class = []
-
-        for c in range(self.num_classes):
-            if c == self.bg_class_idx: continue  # Bỏ qua Background
-
-            # Lấy indices của các mẫu thuộc class c
-            indices_c = np.where(labels == c)[0]
-            if len(indices_c) == 0: continue
-
-            # Lấy bảng nhãn hàng xóm tương ứng
-            neighbors_of_c = neighbor_labels[indices_c]
-
-            # Tính độ nhất quán (Consistency): Tỷ lệ hàng xóm đúng class
-            consistency = (neighbors_of_c == c).mean(axis=1)
+        # Chia nhỏ Query để xử lý (Chunking)
+        num_chunks = (n_samples + self.calc_batch_size - 1) // self.calc_batch_size
+        
+        for i in tqdm(range(0, n_samples, self.calc_batch_size), total=num_chunks, desc="CAC Streaming"):
+            # 1. Lấy Batch Query
+            end = min(i + self.calc_batch_size, n_samples)
             
-            # Trung bình consistency của class này
-            cac_per_class.append(consistency.mean())
+            # Query Features [Batch, Dim]
+            query_chunk = all_features[i:end].cuda()
+            # Query Labels [Batch]
+            query_labels_chunk = all_labels[i:end].cuda()
+            
+            # 2. Tính khoảng cách & Top-K
+            # [Batch, N] -> [Batch, k_search]
+            dists = torch.cdist(query_chunk, ref_features, p=2)
+            _, topk_indices = torch.topk(dists, k=k_search, dim=1, largest=False)
+            
+            # 3. Lấy nhãn hàng xóm
+            # [Batch, k_search]
+            neighbor_labels = ref_labels[topk_indices]
+            
+            # Bỏ cột đầu tiên (chính là bản thân nó)
+            neighbor_labels = neighbor_labels[:, 1:] # [Batch, k]
+            
+            # 4. TÍNH CONSISTENCY NGAY TẠI ĐÂY (Vectorized)
+            # Kiểm tra xem hàng xóm có cùng nhãn với Query không
+            # query_labels_chunk.unsqueeze(1): [Batch, 1]
+            # neighbor_labels: [Batch, k]
+            # matches: [Batch, k] (True/False)
+            matches = (neighbor_labels == query_labels_chunk.unsqueeze(1))
+            
+            # Tính trung bình cho từng mẫu trong batch -> [Batch]
+            consistency_scores = matches.float().mean(dim=1)
+            
+            # 5. CỘNG DỒN VÀO CLASS STATS (Về CPU để xử lý logic)
+            consistency_scores = consistency_scores.cpu().numpy()
+            query_labels_np = query_labels_chunk.cpu().numpy()
+            
+            # Duyệt qua kết quả batch này để gom nhóm theo class
+            unique_classes = np.unique(query_labels_np)
+            for c in unique_classes:
+                if c == self.bg_class_idx: continue # Bỏ qua BG
+                
+                # Mask lọc ra các mẫu thuộc class c trong batch này
+                mask = (query_labels_np == c)
+                
+                class_stats[c]['sum'] += consistency_scores[mask].sum()
+                class_stats[c]['count'] += mask.sum()
+            
+            # Clean up GPU memory
+            del dists, topk_indices, query_chunk, query_labels_chunk, neighbor_labels, matches
+            # torch.cuda.empty_cache() # Không cần gọi liên tục, sẽ làm chậm
 
+        # --- TÍNH TỔNG KẾT ---
+        cac_per_class = []
+        for c in range(self.num_classes):
+            if c == self.bg_class_idx: continue
+            
+            if class_stats[c]['count'] > 0:
+                avg_cac = class_stats[c]['sum'] / class_stats[c]['count']
+                cac_per_class.append(avg_cac)
+        
         if len(cac_per_class) == 0: return 0.0
         return np.mean(cac_per_class) * 100.0
-
-    def _calculate_cad_multiclass(self, dist_matrix, labels):
-        """
-        Helper: Tính Class Alignment Distance (CAD).
-        """
-        cad_per_class = []
-
-        for c in range(self.num_classes):
-            if c == self.bg_class_idx: continue  # Bỏ qua Background
-
-            indices_c = np.where(labels == c)[0]
-            # Cần ít nhất 2 mẫu để tính khoảng cách
-            if len(indices_c) < 2: continue
-
-            # Lấy sub-matrix khoảng cách giữa các điểm trong cùng class
-            sub_dist = dist_matrix[np.ix_(indices_c, indices_c)]
-
-            # Tính trung bình (tổng khoảng cách / số cặp)
-            # sub_dist bao gồm cả đường chéo chính (0).
-            # Số phần tử ma trận là n*n. Số cặp (trừ chính nó) là n*(n-1).
-            n = len(indices_c)
-            avg_dist = sub_dist.sum() / (n * (n - 1))
-
-            cad_per_class.append(avg_dist)
-
-        if len(cad_per_class) == 0: return 0.0
-        return np.mean(cad_per_class)
 
 @EVAL.register("OAD")
 class Evaluate(nn.Module):
