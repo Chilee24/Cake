@@ -1,6 +1,7 @@
 import torch
 from torch.utils.tensorboard import SummaryWriter
 import argparse
+import tqdm
 import yaml
 import os
 import os.path as osp
@@ -21,6 +22,46 @@ def set_seed(seed):
         torch.cuda.manual_seed_all(seed)
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
+
+    
+def fill_memory_bank(loader, model, device):
+    """
+    Chạy 1 epoch (không backprop) để lấp đầy Memory Bank bằng feature thật.
+    """
+    print(f"--> [Warm-up] Starting to fill Memory Bank (Size per class: {model.K})...")
+    
+    model.eval() # Chuyển sang eval để tắt Dropout/BatchNorm update (hoặc để train tùy chiến lược)
+    # Tuy nhiên, với MoCo, thường ta để teacher chạy ở mode eval để feature ổn định.
+    
+    with torch.no_grad():
+        # Dùng tqdm để xem tiến độ
+        pbar = tqdm(loader, desc="Filling Queue")
+        
+        for batch_data in pbar:
+            # 1. Move data to GPU
+            rgb_anchor = batch_data['rgb_anchor'].to(device, non_blocking=True)
+            flow_anchor = batch_data['flow_anchor'].to(device, non_blocking=True)
+            labels = batch_data['labels'].to(device, non_blocking=True)
+            
+            # 2. Forward qua Teacher (Encoder K)
+            # Chúng ta cần truy cập trực tiếp encoder_k để lấy feature sạch
+            # Hoặc gọi hàm forward của model nhưng chỉ lấy k_cls
+            
+            # Cách an toàn nhất: Gọi forward của model (đã có logic tách rgb/flow)
+            # Vì ta đang no_grad nên không tốn bộ nhớ cho graph
+            # Truyền dummy cho shuff vì không dùng đến
+            out_dict = model(rgb_anchor, flow_anchor, rgb_anchor, flow_anchor, labels)
+            
+            k_cls = out_dict['k_cls']
+            
+            # 3. Update Queue
+            if hasattr(model, 'module'):
+                model.module.update_queue(k_cls, labels)
+            else:
+                model.update_queue(k_cls, labels)
+                
+    print("--> [Warm-up] Memory Bank filled with real features!")
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -105,6 +146,10 @@ def main():
         exit()
 
     # --- 7. TRAINING LOOP ---
+    
+    # Lấp đầy Memory Bank trước khi train
+    fill_memory_bank(trainloader, model, device)
+
     best_score, best_epoch = 0.0, 0
     
     for epoch in range(1, cfg['num_epoch'] + 1):
