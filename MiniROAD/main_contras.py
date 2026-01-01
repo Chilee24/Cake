@@ -1,7 +1,7 @@
 import torch
 from torch.utils.tensorboard import SummaryWriter
 import argparse
-import tqdm
+from tqdm import tqdm
 import yaml
 import os
 import os.path as osp
