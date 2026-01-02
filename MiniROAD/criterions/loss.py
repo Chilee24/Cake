@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from criterions.loss_builder import CRITERIONS
+import math
 
 @CRITERIONS.register('CONTRASTIVE_STRICT')
 class StrictInfoNCELoss(nn.Module):
@@ -10,8 +11,9 @@ class StrictInfoNCELoss(nn.Module):
         self.T = cfg.get("temperature", 0.07)
         self.bg_class_idx = cfg.get("bg_class_idx", 0)
         
-        # Hệ số phạt cho Hard Negative (Shuffle/Context)
-        self.hard_neg_weight = 1.0 
+        # Trọng số phạt (50.0). Ta tính sẵn Log của nó để cộng.
+        # log(50) ~ 3.91
+        self.log_hard_weight = math.log(50.0) 
 
     def forward(self, output_dict, labels):
         q = output_dict['q_cls']
@@ -28,82 +30,74 @@ class StrictInfoNCELoss(nn.Module):
         queue_flat = queues.permute(0, 2, 1).reshape(-1, dim).T.clone().detach()
         queue_labels = torch.arange(num_classes, device=device).unsqueeze(1).repeat(1, K).view(-1)
 
-        # 2. Tính Logits & Áp dụng Temperature ngay
-        # Lưu ý: Không dùng log_softmax gộp nữa, ta tính exp() thủ công để kiểm soát mẫu số
+        # --- 2. TÍNH LOGITS & ÁP DỤNG TRỌNG SỐ AN TOÀN ---
+        # Ta cộng log_weight ngay tại đây. Không dùng *= sau đó nữa.
         
-        # A. Positive & Hard Negatives
+        # A. Positive
         sim_pos = torch.einsum('nc,nc->n', [q, k]).unsqueeze(-1) / self.T
-        sim_shuff = torch.einsum('nc,nc->n', [q, q_shuff]).unsqueeze(-1) / self.T
-        sim_ctx = torch.einsum('nc,nc->n', [q, q_context]).unsqueeze(-1) / self.T
         
-        # B. Queue
+        # B. Hard Negatives (CỘNG TRỌNG SỐ TẠI ĐÂY)
+        # shuffle * weight -> logit + log(weight)
+        sim_shuff = (torch.einsum('nc,nc->n', [q, q_shuff]).unsqueeze(-1) / self.T) + self.log_hard_weight
+        
+        # context * weight -> logit + log(weight)
+        sim_ctx = (torch.einsum('nc,nc->n', [q, q_context]).unsqueeze(-1) / self.T) + self.log_hard_weight
+        
+        # C. Queue
         sim_queue = torch.mm(q, queue_flat) / self.T
         
-        # C. Gom lại [B, 3 + N_All]
+        # D. Gom lại [B, 3 + N_All]
         logits = torch.cat([sim_pos, sim_shuff, sim_ctx, sim_queue], dim=1)
         
-        # --- 3. TÍNH EXP (SỐ MŨ) ---
-        # Để ổn định số học, ta trừ max trước khi exp
+        # --- 3. TÍNH EXP ---
+        # Ổn định số học (Numerical Stability)
         logits_max, _ = torch.max(logits, dim=1, keepdim=True)
-        logits = logits - logits_max.detach()
-        exp_logits = torch.exp(logits)
-
-        # --- 4. XÁC ĐỊNH POSITIVE & NEGATIVE MASK ---
+        # .detach() quan trọng để không backprop qua max
+        logits = logits - logits_max.detach() 
         
-        # Mask Positive (Những ai là đồng minh?)
+        # --- 4. XỬ LÝ IGNORE MASK (Floating Background) ---
+        # Tạo mask ignore TRƯỚC khi exp để tránh lỗi inplace sau này
+        
+        # Mask Positive 
         mask_pos = torch.zeros_like(logits, dtype=torch.bool)
-        mask_pos[:, 0] = True # K luôn là Pos
-        
-        # Queue Positive
+        mask_pos[:, 0] = True 
         is_same_class = labels.unsqueeze(1) == queue_labels.unsqueeze(0)
         mask_pos[:, 3:] = is_same_class
-        
-        # Logic BG: Nếu là BG, Queue cùng loại KHÔNG phải Pos (Ignore hoặc Neg)
         is_bg_sample = (labels == self.bg_class_idx)
         mask_pos[is_bg_sample, 3:] = False
 
-        # Mask Negative (Những ai là kẻ thù?)
-        # Mặc định tất cả là Neg, trừ những thằng Pos và những thằng Ignore
-        mask_neg = ~mask_pos
-        
-        # Xử lý Ignore (Floating BG):
-        # BG trong Queue không phải Pos, nhưng cũng không nên là Neg của nhau -> Mask Ignore
+        # Mask Ignore (BG in Queue)
         is_bg_in_queue = (queue_labels == self.bg_class_idx)
         ignore_mask_queue = is_bg_sample.unsqueeze(1) & is_bg_in_queue.unsqueeze(0)
         mask_ignore = torch.cat([torch.zeros(batch_size, 3, device=device, dtype=torch.bool), ignore_mask_queue], dim=1)
-        
-        # Loại Ignore ra khỏi Negative
-        mask_neg = mask_neg & (~mask_ignore)
-        
-        # --- 5. ÁP DỤNG TRỌNG SỐ CHO HARD NEGATIVE ---
-        # Nhân exp của Shuff và Context với weight (để chúng to lên trong mẫu số)
-        # Cột 1 (Shuff) và Cột 2 (Context)
-        exp_logits[:, 1] *= self.hard_neg_weight
-        exp_logits[:, 2] *= self.hard_neg_weight
 
-        # --- 6. TÍNH LOSS "STRICT INFONCE" ---
+        # Thay vì gán trực tiếp, dùng masked_fill (Out-of-place operation)
+        # Gán giá trị cực nhỏ (-1e9) để khi exp() nó sẽ bằng 0
+        logits = logits.masked_fill(mask_ignore, -1e9)
+
+        # Bây giờ mới Exp
+        exp_logits = torch.exp(logits)
+
+        # --- 5. TÍNH LOSS STRICT INFONCE ---
         
-        # Tính tổng Exp của tất cả Negatives cho từng mẫu [B, 1]
-        # (Chỉ cộng những thằng Neg, không cộng Pos, không cộng Ignore)
+        # Mask Negative: Không phải Pos và Không phải Ignore
+        mask_neg = (~mask_pos) & (~mask_ignore)
+        
+        # Tổng Exp của Negatives (Mẫu số phần Negative)
         sum_exp_neg = (exp_logits * mask_neg.float()).sum(1, keepdim=True)
         
-        # Bây giờ ta tính Loss cho TỪNG Positive một
-        # Công thức: L_i = -log( exp(pos_i) / (exp(pos_i) + sum_exp_neg) )
+        # Mẫu số của từng Positive = Chính nó + Tổng Negatives
+        # (Lưu ý: Không cộng các Positive khác vào)
+        denominator = exp_logits + sum_exp_neg 
         
-        # Lấy exp của các mẫu Positive
-        # exp_logits_pos: [B, N_Pos] (Dạng thưa hoặc mask)
-        # Vì số lượng pos mỗi mẫu khác nhau, ta dùng mask để tính
-        
-        denominator = exp_logits + sum_exp_neg # [B, 3 + N_All]
-        # Tại vị trí Pos: denominator = exp(pos_i) + sum_exp_neg
-        # Tại vị trí Neg: không quan tâm
-        
+        # Log Prob
+        # Thêm 1e-8 để tránh log(0)
         log_prob = torch.log(exp_logits / (denominator + 1e-8))
         
-        # Chỉ lấy giá trị tại các vị trí Positive
+        # Chỉ lấy Loss tại các vị trí Positive
         loss_per_pos = -(log_prob * mask_pos.float())
         
-        # Tính trung bình loss
+        # Trung bình Loss
         loss = loss_per_pos.sum() / (mask_pos.sum() + 1e-8)
         
         return loss
