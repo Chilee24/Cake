@@ -2,7 +2,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from criterions.loss_builder import CRITERIONS
-import math
 
 @CRITERIONS.register('CONTRASTIVE_STRICT')
 class StrictInfoNCELoss(nn.Module):
@@ -10,17 +9,14 @@ class StrictInfoNCELoss(nn.Module):
         super(StrictInfoNCELoss, self).__init__()
         self.T = cfg.get("temperature", 0.07)
         self.bg_class_idx = cfg.get("bg_class_idx", 0)
-        
-        # Trọng số phạt (50.0). Ta tính sẵn Log của nó để cộng.
-        # log(50) ~ 3.91
-        self.log_hard_weight = math.log(50.0) 
+        # Đã bỏ log_hard_weight
 
     def forward(self, output_dict, labels):
-        q = output_dict['q_cls']
-        k = output_dict['k_cls']
-        q_shuff = output_dict['q_shuff']
-        q_context = output_dict['q_context']
-        queues = output_dict['queues']
+        q = output_dict['q_cls']          # [B, D]
+        k = output_dict['k_cls']          # [B, D]
+        q_shuff = output_dict['q_shuff']  # [B, D]
+        q_context = output_dict['q_context'] # [B, D]
+        queues = output_dict['queues']    # [C, D, K]
         
         batch_size = q.shape[0]
         num_classes, dim, K = queues.shape
@@ -30,39 +26,29 @@ class StrictInfoNCELoss(nn.Module):
         queue_flat = queues.permute(0, 2, 1).reshape(-1, dim).T.clone().detach()
         queue_labels = torch.arange(num_classes, device=device).unsqueeze(1).repeat(1, K).view(-1)
 
-        # --- 2. TÍNH LOGITS & ÁP DỤNG TRỌNG SỐ AN TOÀN ---
-        # Ta cộng log_weight ngay tại đây. Không dùng *= sau đó nữa.
-        
-        # A. Positive
+        # 2. Tính Logits (KHÔNG cộng trọng số nữa)
         sim_pos = torch.einsum('nc,nc->n', [q, k]).unsqueeze(-1) / self.T
-        
-        # B. Hard Negatives (CỘNG TRỌNG SỐ TẠI ĐÂY)
-        # shuffle * weight -> logit + log(weight)
-        sim_shuff = (torch.einsum('nc,nc->n', [q, q_shuff]).unsqueeze(-1) / self.T) + self.log_hard_weight
-        
-        # context * weight -> logit + log(weight)
-        sim_ctx = (torch.einsum('nc,nc->n', [q, q_context]).unsqueeze(-1) / self.T) + self.log_hard_weight
-        
-        # C. Queue
+        sim_shuff = torch.einsum('nc,nc->n', [q, q_shuff]).unsqueeze(-1) / self.T
+        sim_ctx = torch.einsum('nc,nc->n', [q, q_context]).unsqueeze(-1) / self.T
         sim_queue = torch.mm(q, queue_flat) / self.T
         
-        # D. Gom lại [B, 3 + N_All]
+        # Gom lại: [B, 3 + N_All]
         logits = torch.cat([sim_pos, sim_shuff, sim_ctx, sim_queue], dim=1)
         
-        # --- 3. TÍNH EXP ---
-        # Ổn định số học (Numerical Stability)
+        # 3. Ổn định số học (Quan trọng để tránh NaN)
+        # Trừ đi max để tránh exp() ra số quá lớn
         logits_max, _ = torch.max(logits, dim=1, keepdim=True)
-        # .detach() quan trọng để không backprop qua max
         logits = logits - logits_max.detach() 
         
-        # --- 4. XỬ LÝ IGNORE MASK (Floating Background) ---
-        # Tạo mask ignore TRƯỚC khi exp để tránh lỗi inplace sau này
+        # 4. Tạo Mask Ignore (Floating Background)
         
         # Mask Positive 
         mask_pos = torch.zeros_like(logits, dtype=torch.bool)
         mask_pos[:, 0] = True 
         is_same_class = labels.unsqueeze(1) == queue_labels.unsqueeze(0)
         mask_pos[:, 3:] = is_same_class
+        
+        # Nếu là BG, Queue cùng loại không phải Pos
         is_bg_sample = (labels == self.bg_class_idx)
         mask_pos[is_bg_sample, 3:] = False
 
@@ -71,28 +57,24 @@ class StrictInfoNCELoss(nn.Module):
         ignore_mask_queue = is_bg_sample.unsqueeze(1) & is_bg_in_queue.unsqueeze(0)
         mask_ignore = torch.cat([torch.zeros(batch_size, 3, device=device, dtype=torch.bool), ignore_mask_queue], dim=1)
 
-        # Thay vì gán trực tiếp, dùng masked_fill (Out-of-place operation)
-        # Gán giá trị cực nhỏ (-1e9) để khi exp() nó sẽ bằng 0
+        # Gán giá trị cực nhỏ cho các ô Ignore (-1e9)
         logits = logits.masked_fill(mask_ignore, -1e9)
-
-        # Bây giờ mới Exp
+        
+        # Tính Exp
         exp_logits = torch.exp(logits)
 
-        # --- 5. TÍNH LOSS STRICT INFONCE ---
-        
-        # Mask Negative: Không phải Pos và Không phải Ignore
+        # 5. TÍNH LOSS
         mask_neg = (~mask_pos) & (~mask_ignore)
         
-        # Tổng Exp của Negatives (Mẫu số phần Negative)
+        # Tổng Exp của Negatives
         sum_exp_neg = (exp_logits * mask_neg.float()).sum(1, keepdim=True)
         
-        # Mẫu số của từng Positive = Chính nó + Tổng Negatives
-        # (Lưu ý: Không cộng các Positive khác vào)
+        # Mẫu số cho từng Positive = Chính nó + Tổng Negatives
         denominator = exp_logits + sum_exp_neg 
         
-        # Log Prob
-        # Thêm 1e-8 để tránh log(0)
-        log_prob = torch.log(exp_logits / (denominator + 1e-8))
+        # Tính Log Prob bằng công thức ổn định: logits - log(denominator)
+        # Thay vì log(exp_logits / denominator) -> Gây NaN
+        log_prob = logits - torch.log(denominator + 1e-8)
         
         # Chỉ lấy Loss tại các vị trí Positive
         loss_per_pos = -(log_prob * mask_pos.float())
