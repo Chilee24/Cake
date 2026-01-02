@@ -7,18 +7,10 @@ from criterions.loss_builder import CRITERIONS
 class SupConMROADLoss(nn.Module):
     def __init__(self, cfg):
         super(SupConMROADLoss, self).__init__()
-        self.T = cfg["temperature"]
-        self.bg_class_idx = cfg["bg_class_idx"]
+        self.T = cfg.get("temperature", 0.07)
+        self.bg_class_idx = cfg.get("bg_class_idx", 0)
 
     def forward(self, output_dict, labels):
-        """
-        Args:
-            output_dict: Output từ model, chứa:
-                - 'q_cls': [Batch, Dim] (Query)
-                - 'k_cls': [Batch, Dim] (Key)
-                - 'queues': [Num_Classes, Dim, K] (Memory Bank)
-            labels: [Batch] chứa index của class thật.
-        """
         q = output_dict['q_cls']      # [B, D]
         k = output_dict['k_cls']      # [B, D]
         queues = output_dict['queues'] # [C, D, K]
@@ -27,73 +19,64 @@ class SupConMROADLoss(nn.Module):
         num_classes, dim, K = queues.shape
         device = q.device
 
-        # --- BƯỚC 1: CHUẨN BỊ MEMORY BANK PHẲNG (FLATTEN) ---
-        # Ta cần biến đổi Queues thành dạng [Dim, Total_Samples] để nhân ma trận
-        # Queues gốc: [Num_Classes, Dim, K]
-        # 1. Permute -> [Num_Classes, K, Dim]
-        # 2. Reshape -> [Num_Classes * K, Dim]
-        # 3. Transpose -> [Dim, Num_Classes * K]
+        # 1. Flatten Queue
         queue_flat = queues.permute(0, 2, 1).reshape(-1, dim).T.clone().detach() # [D, N_All]
         
-        # Tạo nhãn cho từng phần tử trong Queue phẳng
-        # Ex: [0, 0, ..., 0, 1, 1, ..., 1, ...]
-        queue_labels = torch.arange(num_classes, device=device).unsqueeze(1).repeat(1, K).view(-1) # [N_All]
+        # Tạo nhãn cho Queue: [0, 0...0, 1, 1...1, ...]
+        queue_labels = torch.arange(num_classes, device=device).unsqueeze(1).repeat(1, K).view(-1)
 
-        # --- BƯỚC 2: TÍNH LOGITS (SIMILARITY) ---
-        # 1. Positive Logits (Giữa q và k tương ứng): [B, 1]
-        # bmm: (B, 1, D) x (B, D, 1) -> (B, 1, 1) -> squeeze -> (B, 1)
+        # 2. Tính Logits
+        # Positive (q . k) -> [B, 1]
         l_pos = torch.einsum('nc,nc->n', [q, k]).unsqueeze(-1)
-        
-        # 2. Negative/Queue Logits (Giữa q và toàn bộ Memory Bank): [B, N_All]
+        # Queue (q . queue) -> [B, N_All]
         l_queue = torch.mm(q, queue_flat)
         
-        # 3. Gom lại: Cột 0 là k (Positive), Cột 1..N là Queue
-        # Shape: [B, 1 + N_All]
+        # Gom lại: [B, 1 + N_All]
         logits = torch.cat([l_pos, l_queue], dim=1)
-        
-        # Scale by Temperature
         logits /= self.T
 
-        # --- BƯỚC 3: TẠO MASK (CHIẾN LƯỢC CỐT LÕI) ---
-        # Mask shape: [B, 1 + N_All]. Giá trị 1 là Positive, 0 là Negative.
-        
-        # Khởi tạo mask
+        # --- 3. TẠO MASK POSITIVE (ĐỂ TÍNH TỬ SỐ) ---
         mask = torch.zeros_like(logits, device=device)
-        
-        # A. Cột đầu tiên luôn là k (Teacher) -> Luôn là Positive
-        mask[:, 0] = 1.0
+        mask[:, 0] = 1.0 # Cột 0 (Key) luôn là Positive
 
-        # B. Xử lý các cột Queue (SupCon Logic)
-        # So sánh nhãn của Batch với nhãn của Queue
-        # batch_labels: [B, 1] vs queue_labels: [1, N_All]
-        # is_same_class: [B, N_All] (True nếu cùng class)
-        is_same_class = labels.unsqueeze(1) == queue_labels.unsqueeze(0)
-        
-        # Gán vào mask (bắt đầu từ cột 1)
+        # Logic cho Action: Kéo queue cùng loại
+        is_same_class = labels.unsqueeze(1) == queue_labels.unsqueeze(0) # [B, N_All]
         mask[:, 1:] = is_same_class.float()
 
-        # C. Xử lý Background (NT-Xent Logic)
-        # Nếu mẫu i là Background -> Chỉ có k là Positive, Queue cùng loại cũng là Negative.
-        # Tìm các dòng trong batch là Background
-        is_bg_sample = (labels == self.bg_class_idx) # [B] -> True/False
-        
-        # Tại các dòng là BG, set phần mask của Queue về 0 hết
-        # (Giữ lại cột 0 vì k luôn là positive)
+        # Logic cho Background: Chỉ kéo k (Cột 0), Queue cùng loại KHÔNG PHẢI Positive
+        is_bg_sample = (labels == self.bg_class_idx) # [B] -> Index dòng là BG
         mask[is_bg_sample, 1:] = 0.0
 
-        # --- BƯỚC 4: TÍNH LOSS ---
-        # Sử dụng công thức SupCon ổn định số học
+        # --- 4. TẠO MASK IGNORE (ĐỂ LOẠI BỎ KHỎI MẪU SỐ - Ý TƯỞNG CỦA BẠN) ---
+        # Mục tiêu: Với dòng là BG, các cột Queue cũng là BG sẽ bị loại bỏ.
         
-        # Log-Softmax trên toàn bộ logits (Mẫu số trong công thức)
-        # log_prob shape: [B, 1 + N_All]
+        # Tìm các phần tử trong Queue là Background
+        is_bg_in_queue = (queue_labels == self.bg_class_idx) # [N_All]
+        
+        # Tạo ma trận [B, N_All] xác định vị trí (Dòng BG, Cột BG)
+        # is_bg_sample[:, None]: [B, 1]
+        # is_bg_in_queue[None, :]: [1, N_All]
+        ignore_mask_queue = is_bg_sample.unsqueeze(1) & is_bg_in_queue.unsqueeze(0)
+        
+        # Mở rộng thêm cột đầu tiên (Key) -> Key không bao giờ bị ignore
+        # Shape [B, 1 + N_All]
+        ignore_mask = torch.cat([
+            torch.zeros(batch_size, 1, device=device, dtype=torch.bool), # Cột k giữ nguyên
+            ignore_mask_queue
+        ], dim=1)
+
+        # Gán logits tại các vị trí ignore thành âm vô cùng
+        # exp(-inf) = 0 -> Biến mất khỏi mẫu số
+        logits[ignore_mask] = -1e9
+
+        # --- 5. TÍNH LOSS ---
+        # log_prob = logits - log(sum(exp(logits)))
+        # Lúc này sum(exp) sẽ không còn chứa các mẫu BG-BG nữa
         log_prob = logits - torch.log(torch.exp(logits).sum(1, keepdim=True))
         
-        # Chỉ lấy log_prob tại các vị trí Positive (theo mask)
-        # sum(1) để cộng dồn các positive của 1 mẫu lại
-        # mask.sum(1) là số lượng positive của mẫu đó (|P(i)|)
+        # Tính trung bình trên các mẫu Positive
         mean_log_prob_pos = (mask * log_prob).sum(1) / mask.sum(1)
         
-        # Loss là trung bình âm của batch
         loss = - mean_log_prob_pos.mean()
         
         return loss

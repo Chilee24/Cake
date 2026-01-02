@@ -11,6 +11,7 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 from tqdm import tqdm
+
 @EVAL.register("CONTRASTIVE")
 class ContrastiveEvaluator:
     def __init__(self, cfg):
