@@ -1,7 +1,7 @@
 task: 'CONTRASTIVE'
 model: 'CONTRASTIVE_MROAD'
 data_name: 'THUMOS'
-loss: 'CONTRASTIVE'
+loss: 'CONTRASTIVE_STRICT'
 output_path: './output_contrastive'
 device: 'cuda'
 

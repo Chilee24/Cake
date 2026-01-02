@@ -3,6 +3,111 @@ import torch.nn as nn
 import torch.nn.functional as F
 from criterions.loss_builder import CRITERIONS
 
+@CRITERIONS.register('CONTRASTIVE_STRICT')
+class StrictInfoNCELoss(nn.Module):
+    def __init__(self, cfg):
+        super(StrictInfoNCELoss, self).__init__()
+        self.T = cfg.get("temperature", 0.07)
+        self.bg_class_idx = cfg.get("bg_class_idx", 0)
+        
+        # Hệ số phạt cho Hard Negative (Shuffle/Context)
+        self.hard_neg_weight = 1.0 
+
+    def forward(self, output_dict, labels):
+        q = output_dict['q_cls']
+        k = output_dict['k_cls']
+        q_shuff = output_dict['q_shuff']
+        q_context = output_dict['q_context']
+        queues = output_dict['queues']
+        
+        batch_size = q.shape[0]
+        num_classes, dim, K = queues.shape
+        device = q.device
+
+        # 1. Flatten Queue
+        queue_flat = queues.permute(0, 2, 1).reshape(-1, dim).T.clone().detach()
+        queue_labels = torch.arange(num_classes, device=device).unsqueeze(1).repeat(1, K).view(-1)
+
+        # 2. Tính Logits & Áp dụng Temperature ngay
+        # Lưu ý: Không dùng log_softmax gộp nữa, ta tính exp() thủ công để kiểm soát mẫu số
+        
+        # A. Positive & Hard Negatives
+        sim_pos = torch.einsum('nc,nc->n', [q, k]).unsqueeze(-1) / self.T
+        sim_shuff = torch.einsum('nc,nc->n', [q, q_shuff]).unsqueeze(-1) / self.T
+        sim_ctx = torch.einsum('nc,nc->n', [q, q_context]).unsqueeze(-1) / self.T
+        
+        # B. Queue
+        sim_queue = torch.mm(q, queue_flat) / self.T
+        
+        # C. Gom lại [B, 3 + N_All]
+        logits = torch.cat([sim_pos, sim_shuff, sim_ctx, sim_queue], dim=1)
+        
+        # --- 3. TÍNH EXP (SỐ MŨ) ---
+        # Để ổn định số học, ta trừ max trước khi exp
+        logits_max, _ = torch.max(logits, dim=1, keepdim=True)
+        logits = logits - logits_max.detach()
+        exp_logits = torch.exp(logits)
+
+        # --- 4. XÁC ĐỊNH POSITIVE & NEGATIVE MASK ---
+        
+        # Mask Positive (Những ai là đồng minh?)
+        mask_pos = torch.zeros_like(logits, dtype=torch.bool)
+        mask_pos[:, 0] = True # K luôn là Pos
+        
+        # Queue Positive
+        is_same_class = labels.unsqueeze(1) == queue_labels.unsqueeze(0)
+        mask_pos[:, 3:] = is_same_class
+        
+        # Logic BG: Nếu là BG, Queue cùng loại KHÔNG phải Pos (Ignore hoặc Neg)
+        is_bg_sample = (labels == self.bg_class_idx)
+        mask_pos[is_bg_sample, 3:] = False
+
+        # Mask Negative (Những ai là kẻ thù?)
+        # Mặc định tất cả là Neg, trừ những thằng Pos và những thằng Ignore
+        mask_neg = ~mask_pos
+        
+        # Xử lý Ignore (Floating BG):
+        # BG trong Queue không phải Pos, nhưng cũng không nên là Neg của nhau -> Mask Ignore
+        is_bg_in_queue = (queue_labels == self.bg_class_idx)
+        ignore_mask_queue = is_bg_sample.unsqueeze(1) & is_bg_in_queue.unsqueeze(0)
+        mask_ignore = torch.cat([torch.zeros(batch_size, 3, device=device, dtype=torch.bool), ignore_mask_queue], dim=1)
+        
+        # Loại Ignore ra khỏi Negative
+        mask_neg = mask_neg & (~mask_ignore)
+        
+        # --- 5. ÁP DỤNG TRỌNG SỐ CHO HARD NEGATIVE ---
+        # Nhân exp của Shuff và Context với weight (để chúng to lên trong mẫu số)
+        # Cột 1 (Shuff) và Cột 2 (Context)
+        exp_logits[:, 1] *= self.hard_neg_weight
+        exp_logits[:, 2] *= self.hard_neg_weight
+
+        # --- 6. TÍNH LOSS "STRICT INFONCE" ---
+        
+        # Tính tổng Exp của tất cả Negatives cho từng mẫu [B, 1]
+        # (Chỉ cộng những thằng Neg, không cộng Pos, không cộng Ignore)
+        sum_exp_neg = (exp_logits * mask_neg.float()).sum(1, keepdim=True)
+        
+        # Bây giờ ta tính Loss cho TỪNG Positive một
+        # Công thức: L_i = -log( exp(pos_i) / (exp(pos_i) + sum_exp_neg) )
+        
+        # Lấy exp của các mẫu Positive
+        # exp_logits_pos: [B, N_Pos] (Dạng thưa hoặc mask)
+        # Vì số lượng pos mỗi mẫu khác nhau, ta dùng mask để tính
+        
+        denominator = exp_logits + sum_exp_neg # [B, 3 + N_All]
+        # Tại vị trí Pos: denominator = exp(pos_i) + sum_exp_neg
+        # Tại vị trí Neg: không quan tâm
+        
+        log_prob = torch.log(exp_logits / (denominator + 1e-8))
+        
+        # Chỉ lấy giá trị tại các vị trí Positive
+        loss_per_pos = -(log_prob * mask_pos.float())
+        
+        # Tính trung bình loss
+        loss = loss_per_pos.sum() / (mask_pos.sum() + 1e-8)
+        
+        return loss
+
 @CRITERIONS.register('CONTRASTIVE')
 class SupConMROADLoss(nn.Module):
     def __init__(self, cfg):
