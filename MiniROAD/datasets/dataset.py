@@ -32,8 +32,6 @@ class ContrastiveOADDataset(data.Dataset):
         self.num_classes = cfg['num_classes']
         self.bg_class_idx = cfg.get('bg_class_idx', 0)
         
-        # --- QUAN TRỌNG: KHỞI TẠO LIST INPUT RỖNG TRƯỚC ---
-        # Để tránh lỗi AttributeError khi __len__ được gọi sớm
         self.inputs = [] 
         
         data_name = cfg['data_name']
@@ -44,9 +42,9 @@ class ContrastiveOADDataset(data.Dataset):
         
         # 2. KHỞI TẠO GRID
         if self.training:
-            self.shuffle_indices() # Hàm này sẽ fill data vào self.inputs
+            self.shuffle_indices()
         else:
-            self._init_test_indices() # Hàm này sẽ fill data vào self.inputs
+            self._init_test_indices()
             
     def _load_features(self, cfg):
         self.annotation_type = cfg['annotation_type']
@@ -57,21 +55,18 @@ class ContrastiveOADDataset(data.Dataset):
         self.rgb_inputs = {}
         self.flow_inputs = {}
         
-        # Tạo dummy zero padding
-        dummy_target = np.zeros((self.window_size - 1, self.num_classes))
-        rgb_dim = FEATURE_SIZES.get(self.rgb_type) 
+        rgb_dim = FEATURE_SIZES.get(self.rgb_type)
         flow_dim = FEATURE_SIZES.get(self.flow_type)
+        dummy_target = np.zeros((self.window_size - 1, self.num_classes))
         dummy_rgb = np.zeros((self.window_size - 1, rgb_dim))
         dummy_flow = np.zeros((self.window_size - 1, flow_dim))
         
         print(f"--> [Dataset] Pre-loading features into RAM ({self.mode})...")
         for vid in self.vids:
-            # Load npy files
             target = np.load(osp.join(self.root_path, self.annotation_type, vid + '.npy'))
             rgb = np.load(osp.join(self.root_path, self.rgb_type, vid + '.npy'))
             flow = np.load(osp.join(self.root_path, self.flow_type, vid + '.npy'))
             
-            # Padding nếu là Training
             if self.training:
                 self.target_all[vid] = np.concatenate((dummy_target, target), axis=0)
                 self.rgb_inputs[vid] = np.concatenate((dummy_rgb, rgb), axis=0)
@@ -82,75 +77,78 @@ class ContrastiveOADDataset(data.Dataset):
                 self.flow_inputs[vid] = flow
 
     def shuffle_indices(self):
-        """
-        Logic mới: Tạo Flat List (self.inputs) thay vì Dictionary Buckets.
-        """
-        # Reset list
         self.inputs = []
-        
         print(f"--> [Dataset] Reshuffling grid with stride={self.stride}...")
         
         for vid in self.vids:
             target = self.target_all[vid]
-            
-            # Random offset (Data Augmentation)
             seed = np.random.randint(self.stride)
             
-            # Tạo sliding window
+            # Sliding Window
             for start in range(seed, target.shape[0] - self.window_size + 1, self.stride):
                 end = start + self.window_size
                 
-                # Lấy nhãn frame cuối
+                # Lấy vector nhãn frame cuối để xác định label chính
                 last_frame_vec = target[end - 1] 
                 label_idx = np.argmax(last_frame_vec)
                 
-                # Append vào list phẳng
                 self.inputs.append([vid, start, end, label_idx])
                 
-        # Shuffle danh sách để training ngẫu nhiên
         random.shuffle(self.inputs)
 
     def _init_test_indices(self):
         self.inputs = []
         for vid in self.vids:
             target = self.target_all[vid]
-            # Test sliding window stride 1
             for w_start in range(0, target.shape[0] - self.window_size + 1, 1):
                  w_end = w_start + self.window_size
                  
-                 # Lấy nhãn (cần thiết cho Validation Metric)
-                 # Lưu ý: Cần đảm bảo logic padding/index khớp với cách load data test
-                 if self.training: # Nếu padding rồi
+                 if self.training:
                      last_frame_vec = target[w_end - 1]
-                 else: # Nếu chưa padding (thường test không padding dummy đầu)
-                     # Cần kiểm tra kỹ, ở đây giả sử target khớp rgb gốc
+                 else:
+                     # Nếu test không padding thì cẩn thận index, ở đây giả sử logic khớp
                      last_frame_vec = target[w_end - 1]
 
                  label_idx = np.argmax(last_frame_vec)
                  self.inputs.append([vid, w_start, w_end, label_idx])
 
     def __getitem__(self, index):
-        # 1. LẤY THÔNG TIN
         vid, start, end, label_idx = self.inputs[index]
         
-        # 2. GET DATA
+        # 1. GET DATA
         rgb_input = self.rgb_inputs[vid][start:end]
         flow_input = self.flow_inputs[vid][start:end]
+        target_window = self.target_all[vid][start:end] # [Window_Size, Num_Classes]
         
-        # 3. CONVERT TENSOR
+        # 2. CONVERT TENSOR
         rgb_tensor = torch.tensor(rgb_input.astype(np.float32))
         flow_tensor = torch.tensor(flow_input.astype(np.float32))
 
-        # 4. BASELINE: Clone cho shuffle
+        # --- UPDATE 1: LẤY NHÃN TỪNG FRAME (Cho Masking) ---
+        # Chuyển one-hot thành index [Window_Size]
+        labels_per_frame = torch.tensor(np.argmax(target_window, axis=1), dtype=torch.long)
+
+        # --- UPDATE 2: SHUFFLE LỊCH SỬ (Cho Temporal Chaos) ---
         rgb_shuff = rgb_tensor.clone()
         flow_shuff = flow_tensor.clone()
-
+        
+        if self.training:
+            # Chỉ shuffle phần lịch sử (0 đến T-2), giữ frame cuối (T-1) nguyên vẹn
+            # Để đảm bảo nó vẫn là "Video đó" tại thời điểm t, nhưng quá khứ bị loạn
+            T = self.window_size
+            perm_indices = torch.randperm(T - 1) # Shuffle từ 0 -> 126
+            
+            rgb_shuff[:-1] = rgb_tensor[perm_indices]
+            flow_shuff[:-1] = flow_tensor[perm_indices]
+        
+        # Output
         return {
             'rgb_anchor': rgb_tensor,
             'flow_anchor': flow_tensor,
-            'rgb_shuff': rgb_shuff,
-            'flow_shuff': flow_shuff,
-            'labels': torch.tensor(label_idx, dtype=torch.long)
+            'rgb_shuff': rgb_shuff,      # Đã shuffle lịch sử
+            'flow_shuff': flow_shuff,    # Đã shuffle lịch sử
+            'labels': torch.tensor(label_idx, dtype=torch.long), # Nhãn frame cuối
+            'labels_per_frame': labels_per_frame # [MỚI] Nhãn toàn bộ window
         }
 
     def __len__(self):

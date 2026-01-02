@@ -16,83 +16,114 @@ FEATURE_SIZES = {
     'cake_kinetics': 4096
 }
 
-class RandomMaskGenerator(nn.Module):
-    def __init__(self, mask_ratio=0.25):
-        """
-        Args:
-            mask_ratio (float): Tỷ lệ frame bị che (VD: 0.25 = 25%).
-        """
-        super(RandomMaskGenerator, self).__init__()
+class SemanticMaskGenerator(nn.Module):
+    def __init__(self, bg_class_idx=0, mask_ratio=0.5):
+        super(SemanticMaskGenerator, self).__init__()
+        self.bg_class_idx = bg_class_idx
         self.mask_ratio = mask_ratio
 
-    def forward(self, x):
+    def forward(self, x, labels_per_frame, final_labels):
         """
         Input:
-            x: Feature tensor [Batch, Window_Size, Dim] (Đã nối RGB + Flow)
+            x: [B, T, D]
+            labels_per_frame: [B, T] (Nhãn từng frame)
+            final_labels: [B] (Nhãn của cả window)
         Output:
-            x_masked: Tensor đã bị che [Batch, Window_Size, Dim]
-            mask: Binary mask [Batch, Window_Size, 1] (0 là bị che, 1 là giữ)
+            x_core: Anchor (Action frames nếu là Action, Random mask nếu là BG)
+            x_context: Negative (BG frames của Action window)
         """
         B, T, D = x.shape
         device = x.device
+
+        # --- 1. TẠO MASK CƠ BẢN (RANDOM) CHO CLASS NỀN ---
+        # Dùng cho các window là Background thuần túy
         rand_tensor = torch.rand(B, T - 1, 1, device=device)
-        mask_past = (rand_tensor > self.mask_ratio).float()
-        mask_last = torch.ones(B, 1, 1, device=device)
-        mask = torch.cat([mask_past, mask_last], dim=1)
-        x_masked = x * mask
-        return x_masked
-    
+        mask_random_past = (rand_tensor > self.mask_ratio).float()
+        mask_random_last = torch.ones(B, 1, 1, device=device)
+        mask_random = torch.cat([mask_random_past, mask_random_last], dim=1) # [B, T, 1]
+
+        # --- 2. TẠO MASK NGỮ NGHĨA (SEMANTIC) CHO CLASS ACTION ---
+        # Xác định frame nào là nền trong window [B, T]
+        is_bg_frame = (labels_per_frame == self.bg_class_idx).unsqueeze(-1).float() # [B, T, 1]
+        
+        # Mask Core: Giữ Action (Not BG), Che BG
+        mask_semantic_core = 1.0 - is_bg_frame
+        
+        # Mask Context: Giữ BG, Che Action
+        mask_semantic_ctx = is_bg_frame
+
+        # --- 3. KẾT HỢP (SWITCHING LOGIC) ---
+        # Xác định mẫu nào là Action, mẫu nào là BG
+        is_bg_sample = (final_labels == self.bg_class_idx).view(B, 1, 1) # [B, 1, 1]
+
+        # A. Xử lý x_core (Anchor)
+        # Nếu là BG sample -> Dùng Random Mask
+        # Nếu là Action sample -> Dùng Semantic Core Mask
+        mask_final_core = torch.where(is_bg_sample, mask_random, mask_semantic_core)
+        
+        # *Safety Check*: Nếu Semantic Core bị đen thùi (lỡ Action sample mà toàn frame nền)
+        # Thì fallback về Random Mask để tránh Anchor bị O (Zero)
+        has_action_frames = mask_final_core.sum(dim=1, keepdim=True) > 0
+        mask_final_core = torch.where(has_action_frames, mask_final_core, mask_random)
+        
+        x_core = x * mask_final_core
+
+        # B. Xử lý x_context (Negative đặc biệt)
+        # Chỉ tạo cho Action sample. BG sample thì gán 0 (sẽ bị mask ignore trong loss)
+        mask_final_ctx = torch.where(is_bg_sample, torch.zeros_like(mask_semantic_ctx), mask_semantic_ctx)
+        
+        x_context = x * mask_final_ctx
+
+        return x_core, x_context
+
 @META_ARCHITECTURES.register("CONTRASTIVE_MROAD")
 class ContrastiveMROADMultiQueue(nn.Module):
     def __init__(self, cfg):
-        """
-        MoCo v2 + Multi-Queue Architecture (Simplified Mapping)
-        """
         super(ContrastiveMROADMultiQueue, self).__init__()
         self.contrastive_dim = cfg.get('contrastive_dim', 128)
         self.hidden_dim = cfg.get('hidden_dim', 2048)
         self.num_classes = cfg['num_classes']
-        self.generator = RandomMaskGenerator(mask_ratio=0.25)
+        self.bg_class_idx = cfg.get('bg_class_idx', 0) # Cần lấy từ config
         
-        # K: Queue Size per Class
+        # Dùng Generator Mới
+        # mask_ratio=0.5 để tăng độ khó cho các mẫu nền
+        self.generator = SemanticMaskGenerator(bg_class_idx=self.bg_class_idx, mask_ratio=0)
+        
         self.K = cfg.get('queue_size_per_class', 1024) 
-        
         self.m = cfg.get('momentum', 0.999)
         self.T = cfg.get('temperature', 0.07)
 
-        # Input Dim Setup
+        # Input Dim Setup (Giữ nguyên)
         self.input_dim = 0
         if not cfg.get('no_rgb', False): 
             self.input_dim += FEATURE_SIZES.get(cfg['rgb_type'])
         if not cfg.get('no_flow', False): 
             self.input_dim += FEATURE_SIZES.get(cfg['flow_type'])
 
-        # --- 1. NETWORK INIT ---
+        # Encoder & Heads (Giữ nguyên)
         self.encoder_q = MROAD(cfg)
         self.encoder_k = MROAD(cfg)
 
-        # Load Pretrained
         if cfg.get('pretrained_backbone_path'):
             self._load_pretrained_backbone(cfg['pretrained_backbone_path'])
 
-        # Copy Weights Student -> Teacher
         for param_q, param_k in zip(self.encoder_q.parameters(), self.encoder_k.parameters()):
             param_k.data.copy_(param_q.data)
             param_k.requires_grad = False 
 
-        # --- 2. PROJECTION HEADS ---
         self.head_queue = nn.Sequential(
             nn.Linear(self.hidden_dim, self.hidden_dim),
             nn.ReLU(),
             nn.Linear(self.hidden_dim, self.contrastive_dim)
         )
 
-        # --- 3. MEMORY BANK (MULTI-QUEUE) ---
-        self.register_buffer("queues", torch.zeros(self.num_classes, self.contrastive_dim, self.K))
+        # Memory Bank (Khởi tạo Random như đã bàn)
+        self.register_buffer("queues", torch.randn(self.num_classes, self.contrastive_dim, self.K))
         self.queues = F.normalize(self.queues, dim=1) 
         self.register_buffer("queue_ptrs", torch.zeros(self.num_classes, dtype=torch.long))
 
     def _load_pretrained_backbone(self, path):
+        # (Code load backbone giữ nguyên)
         print(f"--> Loading Pre-trained Backbone from: {path}")
         checkpoint = torch.load(path, map_location='cpu')
         state_dict = checkpoint['state_dict'] if 'state_dict' in checkpoint else checkpoint
@@ -101,8 +132,7 @@ class ContrastiveMROADMultiQueue(nn.Module):
             if 'f_classification' not in k: 
                 new_k = k.replace('module.', '')
                 backbone_dict[new_k] = v
-        msg = self.encoder_q.load_state_dict(backbone_dict, strict=False)
-        print(f"--> Load status: {msg}")
+        self.encoder_q.load_state_dict(backbone_dict, strict=False)
 
     @torch.no_grad()
     def _momentum_update_key_encoder(self):
@@ -111,24 +141,14 @@ class ContrastiveMROADMultiQueue(nn.Module):
 
     @torch.no_grad()
     def _dequeue_and_enqueue(self, keys, labels):
-        """
-        Cập nhật Queue dựa trên Labels trực tiếp.
-        Logic cũ: Cần map queue_id.
-        Logic mới: Label chính là Queue ID.
-        """
+        # (Code update queue giữ nguyên)
         unique_labels = torch.unique(labels)
-
         for label in unique_labels:
             mask = (labels == label)
             keys_subset = keys[mask] 
-            
-            # Lấy thẳng label làm index cho queue (Không cần mapping phức tạp)
             lbl_idx = label.item()
-            
-            # --- Logic cập nhật Circular Buffer (Giữ nguyên) ---
             ptr = int(self.queue_ptrs[lbl_idx])
             batch_size_subset = keys_subset.shape[0]
-
             if ptr + batch_size_subset <= self.K:
                 self.queues[lbl_idx, :, ptr : ptr + batch_size_subset] = keys_subset.T
                 ptr = (ptr + batch_size_subset) % self.K
@@ -138,51 +158,67 @@ class ContrastiveMROADMultiQueue(nn.Module):
                 overflow = batch_size_subset - remaining
                 self.queues[lbl_idx, :, :overflow] = keys_subset[remaining:].T
                 ptr = overflow
-
             self.queue_ptrs[lbl_idx] = ptr
 
-    def forward(self, rgb_anchor, flow_anchor, rgb_shuff, flow_shuff, labels):
+    def forward(self, rgb_anchor, flow_anchor, rgb_shuff, flow_shuff, labels, labels_per_frame=None):
         """
-        Baseline Mode:
-        - Bỏ qua tính toán nhánh Shuffle để tiết kiệm GPU (vì input giống hệt Anchor).
+        Modified Forward:
+        - Nhận thêm labels_per_frame để tạo Semantic Mask.
+        - Trả về q_cls (Anchor), k_cls (Positive), q_shuff (Negative 1), q_context (Negative 2)
         """
-        # --- A. GENERATOR STEP ---
-        x_anchor = torch.cat((rgb_anchor, flow_anchor), dim=2) 
+        # Input gộp
+        x_raw = torch.cat((rgb_anchor, flow_anchor), dim=2) 
         
-        # Masking 25% (Trừ frame cuối)
-        x_gen = self.generator(x_anchor) 
+        # --- A. GENERATOR STEP (Chiến thuật 3 nhánh) ---
+        # x_core: Dùng làm Anchor (q_cls)
+        # x_context: Dùng làm Negative (q_context)
+        if labels_per_frame is None: 
+            # Fallback nếu quên sửa dataset (dù không nên xảy ra)
+            x_core = x_raw 
+            x_context = torch.zeros_like(x_raw)
+        else:
+            x_core, x_context = self.generator(x_raw, labels_per_frame, labels)
         
-        # Tách RGB/Flow
+        # Tách RGB/Flow cho x_core
         rgb_dim = rgb_anchor.shape[2]
-        rgb_gen = x_gen[:, :, :rgb_dim]
-        flow_gen = x_gen[:, :, rgb_dim:]
+        rgb_core = x_core[:, :, :rgb_dim]
+        flow_core = x_core[:, :, rgb_dim:]
 
-        # --- B. ENCODER STUDENT (QUERY) ---
-        # 1. Tính toán feature cho Anchor (đã bị Mask)
-        feat_q = self.encoder_q(rgb_gen, flow_gen, return_embedding=True) # [B, Hidden]
+        # Tách RGB/Flow cho x_context (Fake BG)
+        rgb_ctx = x_context[:, :, :rgb_dim]
+        flow_ctx = x_context[:, :, rgb_dim:]
+
+        # --- B. ENCODER STUDENT ---
         
-        # Head 1: MoCo Projection
+        # 1. Nhánh Anchor (Core Action)
+        feat_q = self.encoder_q(rgb_core, flow_core, return_embedding=True)
         q_cls = F.normalize(self.head_queue(feat_q), dim=1) 
 
-        # feat_shuff = self.encoder_q(rgb_shuff, flow_shuff, return_embedding=True) # <--- SKIP
-        # q_shuff = F.normalize(self.head_queue(feat_shuff), dim=1)                 # <--- SKIP
-        q_shuff = q_cls 
+        # 2. Nhánh Context (Fake Background - Negative)
+        # Chỉ tính toán, kết quả sẽ được đẩy vào loss để ĐẨY RA XA
+        feat_ctx = self.encoder_q(rgb_ctx, flow_ctx, return_embedding=True)
+        q_context = F.normalize(self.head_queue(feat_ctx), dim=1)
+
+        # 3. Nhánh Shuffle (Temporal Chaos - Negative)
+        # Đã được bật lại!
+        feat_shuff = self.encoder_q(rgb_shuff, flow_shuff, return_embedding=True)
+        q_shuff = F.normalize(self.head_queue(feat_shuff), dim=1)
 
         # --- C. ENCODER TEACHER (KEY) ---
         with torch.no_grad():
             self._momentum_update_key_encoder() 
+            # Teacher nhìn thấy toàn bộ input sạch (Full Context + Action)
             feat_k = self.encoder_k(rgb_anchor, flow_anchor, return_embedding=True)
             k_cls = F.normalize(self.head_queue(feat_k), dim=1)
 
         # --- D. RETURN ---
         return {
-            'q_cls': q_cls,        # Query (Masked)
-            'k_cls': k_cls,        # Key (Clean)
-            'q_shuff': q_shuff,    # Shuffle (Baseline = Query)           
-            'queues': self.queues, # Memory Bank
+            'q_cls': q_cls,        # Anchor (Core Action)
+            'k_cls': k_cls,        # Positive (Full Info)
+            'q_shuff': q_shuff,    # Hard Negative 1 (Sai thời gian)
+            'q_context': q_context,# Hard Negative 2 (Chỉ có nền, thiếu action)
+            'queues': self.queues, 
             'queue_ptrs': self.queue_ptrs,
-            'feat_q': feat_q,      
-            'feat_k': feat_k  
         }
     
     def update_queue(self, k_cls, labels):
