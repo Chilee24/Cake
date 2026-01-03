@@ -2,9 +2,6 @@ from tqdm import tqdm
 import torch
 from trainer.train_builder import TRAINER
 
-import torch
-from tqdm import tqdm
-
 @TRAINER.register("CONTRASTIVE")
 def train_one_epoch(trainloader, model, criterion, optimizer, scaler, epoch, writer=None, scheduler=None):
     model.train()
@@ -16,11 +13,9 @@ def train_one_epoch(trainloader, model, criterion, optimizer, scaler, epoch, wri
     for it, batch_data in enumerate(pbar):
         rgb_anchor = batch_data['rgb_anchor'].cuda(non_blocking=True)
         flow_anchor = batch_data['flow_anchor'].cuda(non_blocking=True)
-        rgb_shuff = batch_data['rgb_shuff'].cuda(non_blocking=True)
-        flow_shuff = batch_data['flow_shuff'].cuda(non_blocking=True)
         labels = batch_data['labels'].cuda(non_blocking=True)
         
-        # [MỚI] Lấy labels_per_frame để phục vụ Conditional Shuffling
+        # Lấy labels_per_frame
         labels_per_frame = batch_data.get('labels_per_frame', None)
         if labels_per_frame is not None:
             labels_per_frame = labels_per_frame.cuda(non_blocking=True)
@@ -28,30 +23,24 @@ def train_one_epoch(trainloader, model, criterion, optimizer, scaler, epoch, wri
         # 2. FORWARD PASS
         optimizer.zero_grad(set_to_none=True)
         
-        # Hàm model forward đã được cập nhật ở bước trước để nhận labels_per_frame
         if scaler is not None:
             with torch.cuda.amp.autocast():
-                out_dict = model(rgb_anchor, flow_anchor, rgb_shuff, flow_shuff, labels, labels_per_frame=labels_per_frame)
+                # Model mới chỉ nhận 4 tham số này (không còn rgb_shuff)
+                out_dict = model(rgb_anchor, flow_anchor, labels, labels_per_frame=labels_per_frame)
                 loss = criterion(out_dict, labels)
             
             # 3. BACKWARD & OPTIMIZER (Mixed Precision)
             scaler.scale(loss).backward()
-            
-            # [QUAN TRỌNG] Unscale trước khi Clip Gradient
             scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=10.0) # Chống NaN
-            
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=10.0)
             scaler.step(optimizer)
             scaler.update()
         else:
             # Standard Precision
-            out_dict = model(rgb_anchor, flow_anchor, rgb_shuff, flow_shuff, labels, labels_per_frame=labels_per_frame)
+            out_dict = model(rgb_anchor, flow_anchor, labels, labels_per_frame=labels_per_frame)
             loss = criterion(out_dict, labels)
             loss.backward()
-            
-            # [QUAN TRỌNG] Clip Gradient chống NaN
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=10.0)
-            
             optimizer.step()
 
         # 4. MEMORY BANK UPDATE
@@ -71,25 +60,34 @@ def train_one_epoch(trainloader, model, criterion, optimizer, scaler, epoch, wri
         epoch_loss += loss_val
         current_lr = optimizer.param_groups[0]["lr"]
 
-        # Monitor nhanh (để kiểm tra xem model có tách được Shuff/Context không)
-        # Chỉ hiển thị mỗi 50 steps để đỡ lag
+        # --- MONITORING MỚI (KHỚP VỚI CHIẾN LƯỢC KIỀNG 3 CHÂN) ---
         postfix_dict = {'loss': f"{loss_val:.4f}", 'lr': f"{current_lr:.7f}"}
         
         if it % 50 == 0:
              with torch.no_grad():
-                # Lấy Sim Positive vs Sim Shuffle
-                q, k = out_dict['q_cls'], out_dict['k_cls']
-                q_shuff = out_dict['q_shuff']
-                valid_mask = out_dict.get('valid_shuffle_mask', None)
+                # Lấy các biến từ output mới
+                q_core = out_dict['q_core']     # Action Focus
+                q_mask = out_dict['q_mask']     # Robustness
+                q_ctx  = out_dict['q_context']  # Context (Negative)
+                k      = out_dict['k_cls']      # Teacher
+
+                # 1. Sim Core (Kỳ vọng CAO): Action sạch giống Teacher không?
+                sim_core = torch.einsum('nc,nc->n', [q_core, k]).mean().item()
                 
-                pos_sim = torch.einsum('nc,nc->n', [q, k]).mean().item()
-                # Tính Sim giữa Teacher và Shuffle (Logic mới)
-                shuff_sim_all = torch.einsum('nc,nc->n', [k, q_shuff])
+                # 2. Sim Mask (Kỳ vọng CAO): Action bị che giống Teacher không?
+                sim_mask = torch.einsum('nc,nc->n', [q_mask, k]).mean().item()
                 
-                if valid_mask is not None and valid_mask.sum() > 0:
-                    shuff_sim = (shuff_sim_all * valid_mask.float()).sum() / valid_mask.sum()
-                    postfix_dict['Pos'] = f"{pos_sim:.2f}"
-                    postfix_dict['Shuf'] = f"{shuff_sim.item():.2f}"
+                # 3. Sim Context (Kỳ vọng THẤP): Nền giống Teacher không? (Chỉ tính trên Action sample)
+                # Lọc những mẫu Action để xem chỉ số này (vì BG sample context là 0)
+                is_action = (labels != model.bg_class_idx if not hasattr(model, 'module') else labels != model.module.bg_class_idx)
+                if is_action.sum() > 0:
+                    sim_ctx = torch.einsum('nc,nc->n', [k[is_action], q_ctx[is_action]]).mean().item()
+                else:
+                    sim_ctx = 0.0
+
+                postfix_dict['Core'] = f"{sim_core:.2f}"
+                postfix_dict['Mask'] = f"{sim_mask:.2f}"
+                postfix_dict['Ctx']  = f"{sim_ctx:.2f}"
 
         pbar.set_postfix(postfix_dict)
 

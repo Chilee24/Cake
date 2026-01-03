@@ -30,7 +30,7 @@ bg_class_idx: 0
 queue_size_per_class: 1024
 momentum: 0.999       # m
 temperature: 0.07     # T
-gen_dropout: 0.25
+mask_ratio: 0.25
 
 # --- OPTIMIZER ---
 optimizer: 'AdamW'

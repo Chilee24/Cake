@@ -1,1 +1,1 @@
-python main_contras.py --config D:\project\DashCam\MiniROAD\configs\thumos_contrastive.yaml
+python main_contras.py --config D:\project\Cake\MiniROAD\configs\thumos_contrastive.yaml

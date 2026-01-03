@@ -25,11 +25,7 @@ def set_seed(seed):
 
     
 def fill_memory_bank(loader, model, device):
-    """
-    Chạy 1 epoch (không backprop) để lấp đầy Memory Bank bằng feature thật.
-    """
     print(f"--> [Warm-up] Starting to fill Memory Bank (Size per class: {model.K})...")
-    
     model.eval() 
     
     with torch.no_grad():
@@ -39,10 +35,15 @@ def fill_memory_bank(loader, model, device):
             rgb_anchor = batch_data['rgb_anchor'].to(device, non_blocking=True)
             flow_anchor = batch_data['flow_anchor'].to(device, non_blocking=True)
             labels = batch_data['labels'].to(device, non_blocking=True)
+
+            # --- SỬA ĐOẠN NÀY (Thêm labels_per_frame) ---
+            labels_per_frame = batch_data.get('labels_per_frame', None)
+            if labels_per_frame is not None:
+                labels_per_frame = labels_per_frame.to(device, non_blocking=True)
             
-            # Forward qua Teacher (Encoder K) bằng cách gọi model forward
-            # Truyền dummy cho shuff vì không dùng đến
-            out_dict = model(rgb_anchor, flow_anchor, rgb_anchor, flow_anchor, labels)
+            # Truyền đủ 4 tham số: rgb, flow, labels, labels_per_frame
+            out_dict = model(rgb_anchor, flow_anchor, labels, labels_per_frame=labels_per_frame)
+            # ----------------------------------------------
             
             k_cls = out_dict['k_cls']
             

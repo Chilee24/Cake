@@ -125,36 +125,9 @@ class ContrastiveOADDataset(data.Dataset):
         # 3. LẤY NHÃN TỪNG FRAME
         labels_per_frame = torch.tensor(np.argmax(target_window, axis=1), dtype=torch.long)
 
-        # 4. TẠO SHUFFLE CÓ ĐIỀU KIỆN (Conditional Shuffling)
-        rgb_shuff = rgb_tensor.clone()
-        flow_shuff = flow_tensor.clone()
-        
-        if self.training:
-            T = self.window_size
-            
-            # Kiểm tra 2 frame cuối cùng
-            # labels_per_frame có shape [T]. Index cuối là -1, kế cuối là -2.
-            last_frame_is_action = (labels_per_frame[-1] != self.bg_class_idx)
-            second_last_is_action = (labels_per_frame[-2] != self.bg_class_idx)
-            
-            # ĐIỀU KIỆN: Chỉ shuffle khi CẢ 2 frame cuối đều là Action
-            if last_frame_is_action and second_last_is_action:
-                
-                # Tạo hoán vị cho phần lịch sử (0 đến T-2)
-                # T-1 (Frame cuối) GIỮ NGUYÊN
-                perm_indices = torch.randperm(T - 1) 
-                
-                rgb_shuff[:-1] = rgb_tensor[perm_indices]
-                flow_shuff[:-1] = flow_tensor[perm_indices]
-            
-            # Nếu không thỏa mãn điều kiện -> Giữ nguyên rgb_shuff y hệt bản gốc
-            # (Lúc này q_shuff sẽ giống q_masked một phần, nhưng model sẽ tự học cách ignore)
-
         return {
             'rgb_anchor': rgb_tensor,
             'flow_anchor': flow_tensor,
-            'rgb_shuff': rgb_shuff,
-            'flow_shuff': flow_shuff,
             'labels': torch.tensor(label_idx, dtype=torch.long),
             'labels_per_frame': labels_per_frame
         }
