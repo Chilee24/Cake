@@ -2,6 +2,9 @@ from tqdm import tqdm
 import torch
 from trainer.train_builder import TRAINER
 
+import torch
+from tqdm import tqdm
+
 @TRAINER.register("CONTRASTIVE")
 def train_one_epoch(trainloader, model, criterion, optimizer, scaler, epoch, writer=None, scheduler=None):
     model.train()
@@ -11,72 +14,89 @@ def train_one_epoch(trainloader, model, criterion, optimizer, scaler, epoch, wri
     pbar = tqdm(trainloader, desc=f'Epoch:{epoch} [Contrastive Train]', leave=True)
     
     for it, batch_data in enumerate(pbar):
-    # # --- DEBUG ---
-    #     print(type(batch_data))
-    #     print(batch_data)
-    #     # -------------
         rgb_anchor = batch_data['rgb_anchor'].cuda(non_blocking=True)
         flow_anchor = batch_data['flow_anchor'].cuda(non_blocking=True)
         rgb_shuff = batch_data['rgb_shuff'].cuda(non_blocking=True)
         flow_shuff = batch_data['flow_shuff'].cuda(non_blocking=True)
         labels = batch_data['labels'].cuda(non_blocking=True)
         
+        # [MỚI] Lấy labels_per_frame để phục vụ Conditional Shuffling
+        labels_per_frame = batch_data.get('labels_per_frame', None)
+        if labels_per_frame is not None:
+            labels_per_frame = labels_per_frame.cuda(non_blocking=True)
+        
         # 2. FORWARD PASS
         optimizer.zero_grad(set_to_none=True)
         
+        # Hàm model forward đã được cập nhật ở bước trước để nhận labels_per_frame
         if scaler is not None:
             with torch.cuda.amp.autocast():
-                # Model nhận 5 tham số đầu vào
-                out_dict = model(rgb_anchor, flow_anchor, rgb_shuff, flow_shuff, labels)
-                
-                # Loss tính dựa trên output dictionary và labels
+                out_dict = model(rgb_anchor, flow_anchor, rgb_shuff, flow_shuff, labels, labels_per_frame=labels_per_frame)
                 loss = criterion(out_dict, labels)
             
             # 3. BACKWARD & OPTIMIZER (Mixed Precision)
             scaler.scale(loss).backward()
+            
+            # [QUAN TRỌNG] Unscale trước khi Clip Gradient
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=10.0) # Chống NaN
+            
             scaler.step(optimizer)
             scaler.update()
         else:
             # Standard Precision
-            out_dict = model(rgb_anchor, flow_anchor, rgb_shuff, flow_shuff, labels)
+            out_dict = model(rgb_anchor, flow_anchor, rgb_shuff, flow_shuff, labels, labels_per_frame=labels_per_frame)
             loss = criterion(out_dict, labels)
             loss.backward()
+            
+            # [QUAN TRỌNG] Clip Gradient chống NaN
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=10.0)
+            
             optimizer.step()
 
-        # 4. MEMORY BANK UPDATE (QUAN TRỌNG NHẤT)
-        # Cần đẩy key mới vào queue sau khi update trọng số
+        # 4. MEMORY BANK UPDATE
         with torch.no_grad():
-            # Lấy key teacher (k_cls) từ output
             k_cls = out_dict['k_cls'].detach()
-            
-            # Xử lý trường hợp chạy nhiều GPU (DataParallel)
             if hasattr(model, 'module'):
                 model.module.update_queue(k_cls, labels)
             else:
                 model.update_queue(k_cls, labels)
 
-        # 5. LR SCHEDULER STEP (Per Iteration)
-        # Contrastive Learning cần Warmup từng step để không vỡ gradient lúc đầu
+        # 5. LR SCHEDULER STEP
         if scheduler is not None:
-            # Chỉ step nếu scheduler là loại update theo batch (vd: OneCycleLR, CosineWithWarmup)
-            # Nếu dùng StepLR (theo epoch) thì bỏ dòng này, gọi ở ngoài vòng for
             scheduler.step()
 
-        # 6. LOGGING
+        # 6. LOGGING & MONITORING
         loss_val = loss.item()
         epoch_loss += loss_val
         current_lr = optimizer.param_groups[0]["lr"]
 
-        # Update tqdm bar
-        pbar.set_postfix(loss=f"{loss_val:.4f}", lr=f"{current_lr:.7f}")
+        # Monitor nhanh (để kiểm tra xem model có tách được Shuff/Context không)
+        # Chỉ hiển thị mỗi 50 steps để đỡ lag
+        postfix_dict = {'loss': f"{loss_val:.4f}", 'lr': f"{current_lr:.7f}"}
+        
+        if it % 50 == 0:
+             with torch.no_grad():
+                # Lấy Sim Positive vs Sim Shuffle
+                q, k = out_dict['q_cls'], out_dict['k_cls']
+                q_shuff = out_dict['q_shuff']
+                valid_mask = out_dict.get('valid_shuffle_mask', None)
+                
+                pos_sim = torch.einsum('nc,nc->n', [q, k]).mean().item()
+                # Tính Sim giữa Teacher và Shuffle (Logic mới)
+                shuff_sim_all = torch.einsum('nc,nc->n', [k, q_shuff])
+                
+                if valid_mask is not None and valid_mask.sum() > 0:
+                    shuff_sim = (shuff_sim_all * valid_mask.float()).sum() / valid_mask.sum()
+                    postfix_dict['Pos'] = f"{pos_sim:.2f}"
+                    postfix_dict['Shuf'] = f"{shuff_sim.item():.2f}"
+
+        pbar.set_postfix(postfix_dict)
 
         if writer is not None:
             global_step = it + epoch * len(trainloader)
             writer.add_scalar("Train/Loss", loss_val, global_step)
             writer.add_scalar("Train/LR", current_lr, global_step)
-            
-            # Log thêm accuracy của task phụ (VD: tỉ lệ chọn đúng positive) nếu cần
-            # writer.add_scalar("Train/Gen_Score_Mean", out_dict['gen_scores'].mean().item(), global_step)
 
     return epoch_loss / len(trainloader)
 

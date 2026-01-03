@@ -171,6 +171,18 @@ def main():
         # D. SCHEDULER STEP (Per Epoch)
         if scheduler is not None:
             scheduler.step()
+        
+        checkpoint = {
+            'epoch': epoch + 1,
+            'model': model.state_dict(),
+            'optimizer': optimizer.state_dict(),
+            # Lưu thêm scheduler nếu cần resume
+            'scaler': scaler.state_dict() if scaler else None,
+        }
+        torch.save(checkpoint, os.path.join(args.output_path, 'latest_model.pth'))
+        epoch_save_path = os.path.join(args.output_path, f'checkpoint_epoch_{epoch + 1}.pth')
+        torch.save(checkpoint, epoch_save_path)
+        print(f"--> Saved checkpoint to {epoch_save_path}")
             
         # E. SAVE BEST CHECKPOINT
         if cac_score > best_score:
