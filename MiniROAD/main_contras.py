@@ -30,31 +30,22 @@ def fill_memory_bank(loader, model, device):
     """
     print(f"--> [Warm-up] Starting to fill Memory Bank (Size per class: {model.K})...")
     
-    model.eval() # Chuyển sang eval để tắt Dropout/BatchNorm update (hoặc để train tùy chiến lược)
-    # Tuy nhiên, với MoCo, thường ta để teacher chạy ở mode eval để feature ổn định.
+    model.eval() 
     
     with torch.no_grad():
-        # Dùng tqdm để xem tiến độ
         pbar = tqdm(loader, desc="Filling Queue")
         
         for batch_data in pbar:
-            # 1. Move data to GPU
             rgb_anchor = batch_data['rgb_anchor'].to(device, non_blocking=True)
             flow_anchor = batch_data['flow_anchor'].to(device, non_blocking=True)
             labels = batch_data['labels'].to(device, non_blocking=True)
             
-            # 2. Forward qua Teacher (Encoder K)
-            # Chúng ta cần truy cập trực tiếp encoder_k để lấy feature sạch
-            # Hoặc gọi hàm forward của model nhưng chỉ lấy k_cls
-            
-            # Cách an toàn nhất: Gọi forward của model (đã có logic tách rgb/flow)
-            # Vì ta đang no_grad nên không tốn bộ nhớ cho graph
+            # Forward qua Teacher (Encoder K) bằng cách gọi model forward
             # Truyền dummy cho shuff vì không dùng đến
             out_dict = model(rgb_anchor, flow_anchor, rgb_anchor, flow_anchor, labels)
             
             k_cls = out_dict['k_cls']
             
-            # 3. Update Queue
             if hasattr(model, 'module'):
                 model.module.update_queue(k_cls, labels)
             else:
@@ -82,12 +73,12 @@ def main():
     set_seed(20)
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-    # Tạo identifier riêng cho bài toán Contrastive
+    # Tạo identifier riêng
     identifier = f'Contrastive_{cfg["model"]}_{cfg["data_name"]}'
-    # Nếu có config feature type thì thêm vào tên
     if 'rgb_type' in cfg:
         identifier += f'_{cfg["rgb_type"]}'
         
+    # result_path là đường dẫn thư mục output thực tế (VD: ./output/Contrastive_..._timestamp)
     result_path = create_outdir(osp.join(cfg['output_path'], identifier))
     
     # Init Logger & Tensorboard
@@ -98,13 +89,10 @@ def main():
     writer = SummaryWriter(osp.join(result_path, 'runs')) if args.tensorboard else None
 
     # --- 2. DATASETS ---
-    # mode='train' trả về ContrastiveOADDataset (có shuffle_indices)
     trainloader = build_data_loader(cfg, mode='train')
-    # mode='test' trả về ContrastiveOADDataset (sequential)
     testloader = build_data_loader(cfg, mode='test')
 
     # --- 3. MODEL & CRITERION ---
-    # Trả về: ContrastiveMROADMultiQueue
     model = build_model(cfg, device) 
     evaluate = build_eval(cfg)
     train_one_epoch = build_trainer(cfg)
@@ -116,12 +104,9 @@ def main():
         {'params': model.parameters(), 'initial_lr': cfg['lr']}
     ], lr=cfg['lr'], weight_decay=cfg.get("weight_decay", 1e-4))
 
-    # --- 5. SCHEDULER (COSINE ANNEALING) ---
+    # --- 5. SCHEDULER ---
     scheduler = None
     if args.lr_scheduler:
-        # CosineAnnealingLR update theo EPOCH
-        # T_max: Tổng số epoch train
-        # eta_min: Learning rate tối thiểu (cuối chu kỳ)
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             optimizer, 
             T_max=cfg['num_epoch'], 
@@ -139,8 +124,11 @@ def main():
     # --- 6. EVALUATION MODE ---
     if args.eval is not None:
         logger.info(f"Loading checkpoint from {args.eval}...")
-        model.load_state_dict(torch.load(args.eval))
-        # Valid 1 epoch để lấy chỉ số CAC
+        checkpoint = torch.load(args.eval, map_location=device)
+        # Handle state dict keys
+        state_dict = checkpoint['model'] if 'model' in checkpoint else checkpoint
+        model.load_state_dict(state_dict)
+        
         cac_score = evaluate(testloader, model, criterion, epoch=0, writer=None)
         logger.info(f'{cfg["task"]} Evaluation -> CAC Score (Action): {cac_score:.2f}%')
         exit()
@@ -154,45 +142,48 @@ def main():
     
     for epoch in range(1, cfg['num_epoch'] + 1):
         # A. TRAIN ONE EPOCH
-        # Lưu ý: Pass scheduler=None vào train_one_epoch vì ta step ở ngoài vòng lặp (theo epoch)
         train_loss = train_one_epoch(
             trainloader, model, criterion, optimizer, scaler, epoch, writer, scheduler=None
         )
         
-        # B. SHUFFLE DATASET (Quan trọng!)
-        # Tạo lại lưới sliding window ngẫu nhiên cho epoch sau
+        # B. SHUFFLE DATASET
         if hasattr(trainloader.dataset, 'shuffle_indices'):
             trainloader.dataset.shuffle_indices()
         
         # C. VALIDATION
-        # Sử dụng CAC Score làm thước đo chính thay vì mAP
         cac_score = evaluate(testloader, model, criterion, epoch, writer)
         
-        # D. SCHEDULER STEP (Per Epoch)
+        # D. SCHEDULER STEP
         if scheduler is not None:
             scheduler.step()
         
+        # E. SAVE CHECKPOINT (MỌI EPOCH)
         checkpoint = {
-            'epoch': epoch + 1,
+            'epoch': epoch, # Lưu epoch hiện tại
             'model': model.state_dict(),
             'optimizer': optimizer.state_dict(),
-            # Lưu thêm scheduler nếu cần resume
             'scaler': scaler.state_dict() if scaler else None,
+            'best_cac': best_score
         }
-        torch.save(checkpoint, os.path.join(args.output_path, 'latest_model.pth'))
-        epoch_save_path = os.path.join(args.output_path, f'checkpoint_epoch_{epoch + 1}.pth')
+        
+        # 1. Lưu latest (đè lên nhau để resume)
+        torch.save(checkpoint, osp.join(result_path, 'latest_model.pth'))
+        
+        # 2. Lưu từng epoch (để visualize sau này) - Lưu vào subfolder 'ckpts' cho gọn
+        ckpt_dir = osp.join(result_path, 'ckpts')
+        os.makedirs(ckpt_dir, exist_ok=True)
+        
+        epoch_save_path = osp.join(ckpt_dir, f'checkpoint_epoch_{epoch}.pth')
         torch.save(checkpoint, epoch_save_path)
-        print(f"--> Saved checkpoint to {epoch_save_path}")
+        # print(f"--> Saved checkpoint: {epoch_save_path}") # Comment bớt cho đỡ rác log
             
-        # E. SAVE BEST CHECKPOINT
+        # 3. Lưu Best Model
         if cac_score > best_score:
             best_score = cac_score
             best_epoch = epoch
-            save_path = osp.join(result_path, 'ckpts', 'best.pth')
-            # Tạo folder ckpts nếu chưa có
-            os.makedirs(osp.dirname(save_path), exist_ok=True)
-            torch.save(model.state_dict(), save_path)
-            logger.info(f"--> New Best CAC: {best_score:.2f}%! Model saved.")
+            best_save_path = osp.join(result_path, 'best_model.pth')
+            torch.save(checkpoint, best_save_path) # Lưu cả checkpoint thay vì chỉ state_dict
+            logger.info(f"--> New Best CAC: {best_score:.2f}%! Saved best_model.pth")
 
         # F. LOGGING
         current_lr = optimizer.param_groups[0]["lr"]
@@ -203,12 +194,7 @@ def main():
             f'LR: {current_lr:.7f}'
         )
         
-    # Rename best model với điểm số cuối cùng
-    final_best_path = osp.join(result_path, 'ckpts', f'best_CAC_{best_score:.2f}.pth')
-    if osp.exists(osp.join(result_path, 'ckpts', 'best.pth')):
-        os.rename(osp.join(result_path, 'ckpts', 'best.pth'), final_best_path)
-        
-    logger.info(f"Training Finished. Best Model: {final_best_path}")
+    logger.info(f"Training Finished. Best CAC: {best_score:.2f}% at Epoch {best_epoch}")
 
 if __name__ == '__main__':
     main()
