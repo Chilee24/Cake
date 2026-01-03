@@ -20,6 +20,17 @@ FEATURE_SIZES = {
 }
 
 
+import torch.utils.data as data
+import torch
+import numpy as np
+import random
+import json
+import os.path as osp
+from datasets import DATA_LAYERS
+
+# Đảm bảo FEATURE_SIZES đã được import
+# from config import FEATURE_SIZES 
+
 @DATA_LAYERS.register("THUMOS")
 class ContrastiveOADDataset(data.Dataset):
     
@@ -55,8 +66,10 @@ class ContrastiveOADDataset(data.Dataset):
         self.rgb_inputs = {}
         self.flow_inputs = {}
         
-        rgb_dim = FEATURE_SIZES.get(self.rgb_type)
-        flow_dim = FEATURE_SIZES.get(self.flow_type)
+        # Lấy feature dim (Giả sử bạn đã có biến global FEATURE_SIZES hoặc hardcode)
+        rgb_dim = 2048 
+        flow_dim = 1024
+        
         dummy_target = np.zeros((self.window_size - 1, self.num_classes))
         dummy_rgb = np.zeros((self.window_size - 1, rgb_dim))
         dummy_flow = np.zeros((self.window_size - 1, flow_dim))
@@ -102,13 +115,10 @@ class ContrastiveOADDataset(data.Dataset):
             target = self.target_all[vid]
             for w_start in range(0, target.shape[0] - self.window_size + 1, 1):
                  w_end = w_start + self.window_size
-                 
                  if self.training:
                      last_frame_vec = target[w_end - 1]
                  else:
-                     # Nếu test không padding thì cẩn thận index, ở đây giả sử logic khớp
                      last_frame_vec = target[w_end - 1]
-
                  label_idx = np.argmax(last_frame_vec)
                  self.inputs.append([vid, w_start, w_end, label_idx])
 
@@ -118,37 +128,47 @@ class ContrastiveOADDataset(data.Dataset):
         # 1. GET DATA
         rgb_input = self.rgb_inputs[vid][start:end]
         flow_input = self.flow_inputs[vid][start:end]
-        target_window = self.target_all[vid][start:end] # [Window_Size, Num_Classes]
+        target_window = self.target_all[vid][start:end] 
         
         # 2. CONVERT TENSOR
         rgb_tensor = torch.tensor(rgb_input.astype(np.float32))
         flow_tensor = torch.tensor(flow_input.astype(np.float32))
 
-        # --- UPDATE 1: LẤY NHÃN TỪNG FRAME (Cho Masking) ---
-        # Chuyển one-hot thành index [Window_Size]
+        # 3. LẤY NHÃN TỪNG FRAME
         labels_per_frame = torch.tensor(np.argmax(target_window, axis=1), dtype=torch.long)
 
-        # --- UPDATE 2: SHUFFLE LỊCH SỬ (Cho Temporal Chaos) ---
+        # 4. TẠO SHUFFLE CÓ ĐIỀU KIỆN (Conditional Shuffling)
         rgb_shuff = rgb_tensor.clone()
         flow_shuff = flow_tensor.clone()
         
         if self.training:
-            # Chỉ shuffle phần lịch sử (0 đến T-2), giữ frame cuối (T-1) nguyên vẹn
-            # Để đảm bảo nó vẫn là "Video đó" tại thời điểm t, nhưng quá khứ bị loạn
             T = self.window_size
-            perm_indices = torch.randperm(T - 1) # Shuffle từ 0 -> 126
             
-            rgb_shuff[:-1] = rgb_tensor[perm_indices]
-            flow_shuff[:-1] = flow_tensor[perm_indices]
-        
-        # Output
+            # Kiểm tra 2 frame cuối cùng
+            # labels_per_frame có shape [T]. Index cuối là -1, kế cuối là -2.
+            last_frame_is_action = (labels_per_frame[-1] != self.bg_class_idx)
+            second_last_is_action = (labels_per_frame[-2] != self.bg_class_idx)
+            
+            # ĐIỀU KIỆN: Chỉ shuffle khi CẢ 2 frame cuối đều là Action
+            if last_frame_is_action and second_last_is_action:
+                
+                # Tạo hoán vị cho phần lịch sử (0 đến T-2)
+                # T-1 (Frame cuối) GIỮ NGUYÊN
+                perm_indices = torch.randperm(T - 1) 
+                
+                rgb_shuff[:-1] = rgb_tensor[perm_indices]
+                flow_shuff[:-1] = flow_tensor[perm_indices]
+            
+            # Nếu không thỏa mãn điều kiện -> Giữ nguyên rgb_shuff y hệt bản gốc
+            # (Lúc này q_shuff sẽ giống q_masked một phần, nhưng model sẽ tự học cách ignore)
+
         return {
             'rgb_anchor': rgb_tensor,
             'flow_anchor': flow_tensor,
-            'rgb_shuff': rgb_shuff,      # Đã shuffle lịch sử
-            'flow_shuff': flow_shuff,    # Đã shuffle lịch sử
-            'labels': torch.tensor(label_idx, dtype=torch.long), # Nhãn frame cuối
-            'labels_per_frame': labels_per_frame # [MỚI] Nhãn toàn bộ window
+            'rgb_shuff': rgb_shuff,
+            'flow_shuff': flow_shuff,
+            'labels': torch.tensor(label_idx, dtype=torch.long),
+            'labels_per_frame': labels_per_frame
         }
 
     def __len__(self):

@@ -210,6 +210,15 @@ class ContrastiveMROADMultiQueue(nn.Module):
             # Teacher nhìn thấy toàn bộ input sạch (Full Context + Action)
             feat_k = self.encoder_k(rgb_anchor, flow_anchor, return_embedding=True)
             k_cls = F.normalize(self.head_queue(feat_k), dim=1)
+        
+        if labels_per_frame is not None:
+            is_not_bg = (labels_per_frame != self.bg_class_idx)
+            # Kiểm tra Frame cuối (T-1) và Kế cuối (T-2)
+            # is_not_bg shape [B, T]
+            valid_shuffle_mask = is_not_bg[:, -1] & is_not_bg[:, -2]
+        else:
+            # Fallback nếu không có labels_per_frame (ít khi xảy ra)
+            valid_shuffle_mask = (labels != self.bg_class_idx)
 
         # --- D. RETURN ---
         return {
@@ -219,6 +228,7 @@ class ContrastiveMROADMultiQueue(nn.Module):
             'q_context': q_context,# Hard Negative 2 (Chỉ có nền, thiếu action)
             'queues': self.queues, 
             'queue_ptrs': self.queue_ptrs,
+            'valid_shuffle_mask': valid_shuffle_mask
         }
     
     def update_queue(self, k_cls, labels):
