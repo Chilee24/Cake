@@ -11,14 +11,13 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 from tqdm import tqdm
-
 @EVAL.register("CONTRASTIVE")
 class ContrastiveEvaluator:
     def __init__(self, cfg):
         self.num_classes = cfg['num_classes']
         self.bg_class_idx = cfg.get('bg_class_idx', 0)
         self.k_neighbors_ratio = 0.05 
-        # Batch size xử lý từng phần (512 là an toàn cho VRAM 4GB)
+        # Batch size xử lý tính toán khoảng cách (512 là an toàn cho VRAM 4GB với 157k samples)
         self.calc_batch_size = 512 
 
     def __call__(self, val_loader, model, criterion, epoch, writer=None):
@@ -33,19 +32,26 @@ class ContrastiveEvaluator:
             # --- BƯỚC 1: THU THẬP FEATURE ---
             pbar = tqdm(val_loader, desc=f"Epoch:{epoch} Validating")
             for batch_data in pbar:
-                # Move inputs to GPU
+                # 1. Move inputs to GPU
                 rgb_anchor = batch_data['rgb_anchor'].cuda(non_blocking=True)
                 flow_anchor = batch_data['flow_anchor'].cuda(non_blocking=True)
-                rgb_shuff = batch_data['rgb_shuff'].cuda(non_blocking=True)
-                flow_shuff = batch_data['flow_shuff'].cuda(non_blocking=True)
                 labels = batch_data['labels'].cuda(non_blocking=True)
+                
+                # [QUAN TRỌNG] Lấy thêm labels_per_frame để khớp signature model
+                labels_per_frame = batch_data.get('labels_per_frame', None)
+                if labels_per_frame is not None:
+                    labels_per_frame = labels_per_frame.cuda(non_blocking=True)
 
-                # Forward để lấy feature và loss
-                out_dict = model(rgb_anchor, flow_anchor, rgb_shuff, flow_shuff, labels)
+                # 2. Forward
+                # Model hiện tại chỉ nhận 4 tham số này
+                out_dict = model(rgb_anchor, flow_anchor, labels, labels_per_frame=labels_per_frame)
+                
+                # Tính val loss (để tham khảo)
                 loss = criterion(out_dict, labels)
                 total_loss += loss.item()
 
-                # Đưa feature về CPU ngay lập tức
+                # 3. Lấy Feature Teacher (k_cls) làm chuẩn đánh giá
+                # Đưa feature về CPU ngay lập tức để tiết kiệm GPU cho bước tính toán sau
                 k_cls = out_dict['k_cls'].detach().cpu() 
                 labels_cpu = labels.detach().cpu()
                 
@@ -61,7 +67,7 @@ class ContrastiveEvaluator:
 
         print(f"--> [Val] Calculating CAC Streaming for {n_samples} samples...")
 
-        # --- BƯỚC 2: TÍNH CAC STREAMING (KHÔNG LƯU MA TRẬN HÀNG XÓM) ---
+        # --- BƯỚC 2: TÍNH CAC STREAMING ---
         cac_score = self._calculate_cac_streaming(all_features, all_labels)
 
         print(f"--> [Val Epoch {epoch}] Loss: {avg_loss:.4f} | CAC (Action): {cac_score:.2f}%")
@@ -75,22 +81,21 @@ class ContrastiveEvaluator:
     def _calculate_cac_streaming(self, all_features, all_labels):
         """
         Tính CAC theo kiểu 'Streaming': Tính đến đâu cộng dồn đến đó, 
-        không bao giờ lưu toàn bộ ma trận hàng xóm.
+        không bao giờ lưu toàn bộ ma trận khoảng cách N*N.
         """
         n_samples = all_features.shape[0]
         k = max(1, int(n_samples * self.k_neighbors_ratio))
-        k_search = k + 1 # +1 vì topk bao gồm chính nó
+        k_search = k + 1 # +1 vì topk bao gồm chính nó (khoảng cách = 0)
         
         # Dictionary để cộng dồn kết quả cho từng class
-        # class_idx -> {'sum_consistency': float, 'count': int}
         class_stats = {c: {'sum': 0.0, 'count': 0} for c in range(self.num_classes)}
         
         # Move Reference lên GPU (Toàn bộ dataset làm mốc so sánh)
-        # 157k vector 128-dim ~ 80MB VRAM -> Rất nhẹ
+        # 157k vector 128-dim ~ 80MB VRAM -> Rất nhẹ, để trên GPU tính cho nhanh
         ref_features = all_features.cuda()
         ref_labels = all_labels.cuda()
 
-        # Chia nhỏ Query để xử lý (Chunking)
+        # Chia nhỏ Query để xử lý (Chunking) để tránh OOM khi tạo ma trận dist [Batch, N]
         num_chunks = (n_samples + self.calc_batch_size - 1) // self.calc_batch_size
         
         for i in tqdm(range(0, n_samples, self.calc_batch_size), total=num_chunks, desc="CAC Streaming"):
@@ -104,6 +109,7 @@ class ContrastiveEvaluator:
             
             # 2. Tính khoảng cách & Top-K
             # [Batch, N] -> [Batch, k_search]
+            # torch.cdist rất tối ưu trên GPU
             dists = torch.cdist(query_chunk, ref_features, p=2)
             _, topk_indices = torch.topk(dists, k=k_search, dim=1, largest=False)
             
@@ -111,24 +117,20 @@ class ContrastiveEvaluator:
             # [Batch, k_search]
             neighbor_labels = ref_labels[topk_indices]
             
-            # Bỏ cột đầu tiên (chính là bản thân nó)
+            # Bỏ cột đầu tiên (chính là bản thân nó, dist=0)
             neighbor_labels = neighbor_labels[:, 1:] # [Batch, k]
             
-            # 4. TÍNH CONSISTENCY NGAY TẠI ĐÂY (Vectorized)
+            # 4. TÍNH CONSISTENCY (Vectorized)
             # Kiểm tra xem hàng xóm có cùng nhãn với Query không
-            # query_labels_chunk.unsqueeze(1): [Batch, 1]
-            # neighbor_labels: [Batch, k]
-            # matches: [Batch, k] (True/False)
             matches = (neighbor_labels == query_labels_chunk.unsqueeze(1))
             
-            # Tính trung bình cho từng mẫu trong batch -> [Batch]
+            # Tính trung bình consistency cho từng mẫu trong batch -> [Batch]
             consistency_scores = matches.float().mean(dim=1)
             
-            # 5. CỘNG DỒN VÀO CLASS STATS (Về CPU để xử lý logic)
+            # 5. CỘNG DỒN VÀO CLASS STATS (Về CPU để xử lý logic python)
             consistency_scores = consistency_scores.cpu().numpy()
             query_labels_np = query_labels_chunk.cpu().numpy()
             
-            # Duyệt qua kết quả batch này để gom nhóm theo class
             unique_classes = np.unique(query_labels_np)
             for c in unique_classes:
                 if c == self.bg_class_idx: continue # Bỏ qua BG
@@ -139,9 +141,8 @@ class ContrastiveEvaluator:
                 class_stats[c]['sum'] += consistency_scores[mask].sum()
                 class_stats[c]['count'] += mask.sum()
             
-            # Clean up GPU memory
+            # Clean up GPU memory cho batch này
             del dists, topk_indices, query_chunk, query_labels_chunk, neighbor_labels, matches
-            # torch.cuda.empty_cache() # Không cần gọi liên tục, sẽ làm chậm
 
         # --- TÍNH TỔNG KẾT ---
         cac_per_class = []
