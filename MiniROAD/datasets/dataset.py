@@ -19,18 +19,6 @@ FEATURE_SIZES = {
     'flow_kinetics_x3d': 2048
 }
 
-
-import torch.utils.data as data
-import torch
-import numpy as np
-import random
-import json
-import os.path as osp
-from datasets import DATA_LAYERS
-
-# Đảm bảo FEATURE_SIZES đã được import
-# from config import FEATURE_SIZES 
-
 @DATA_LAYERS.register("THUMOS")
 class ContrastiveOADDataset(data.Dataset):
     
