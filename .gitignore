@@ -17,3 +17,4 @@ data/
 # Output files
 output/
 output_contrastive/
+output_cls/

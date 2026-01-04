@@ -130,8 +130,8 @@ def plot_tsne(features, labels, save_path, title='T-SNE', bg_class_idx=0):
 def main():
     parser = argparse.ArgumentParser()
     # Sửa đường dẫn mặc định cho khớp môi trường Kaggle/Colab của bạn
-    parser.add_argument('--config', type=str, default='/kaggle/working/Cake/MiniROAD/configs/thumos_contrastive.yaml')
-    parser.add_argument('--checkpoint', type=str, required=True, help='Path to .pth checkpoint')
+    parser.add_argument('--config', type=str, default=r'D:\project\Cake\MiniROAD\configs\thumos_contrastive.yaml')
+    parser.add_argument('--checkpoint', type=str, default=r'D:\project\Cake\MiniROAD\best_model.pth')
     args = parser.parse_args()
 
     # Load Config
@@ -148,7 +148,7 @@ def main():
     
     # 2. Load Checkpoint
     print(f"--> Loading Checkpoint: {args.checkpoint}")
-    ckpt = torch.load(args.checkpoint, map_location=device)
+    ckpt = torch.load(args.checkpoint, map_location=device, weights_only=False)
     
     # Handle state dict
     if 'state_dict' in ckpt:

@@ -17,7 +17,6 @@ class ContrastiveEvaluator:
         self.num_classes = cfg['num_classes']
         self.bg_class_idx = cfg.get('bg_class_idx', 0)
         self.k_neighbors_ratio = 0.05 
-        # Batch size xử lý tính toán khoảng cách (512 là an toàn cho VRAM 4GB với 157k samples)
         self.calc_batch_size = 512 
 
     def __call__(self, val_loader, model, criterion, epoch, writer=None):

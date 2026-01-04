@@ -11,7 +11,7 @@ rgb_type: 'rgb_kinetics_resnet50'
 flow_type: 'flow_kinetics_bninception'
 annotation_type: 'target_perframe'
 video_list_path: 'data_info/video_list.json'
-output_path: './output_phase2'
+output_path: './output_cls'
 window_size: 128 
 batch_size: 16 
 test_batch_size: 1
@@ -27,7 +27,7 @@ num_layers: 1
 stride: 4
 no_flow: False
 no_rgb: False
-phase1_ckpt: 'D:\project\DashCam\MiniROAD\output_phase2\MiniROAD_THUMOS_kinetics_flowTrue_6\ckpts\best_68.82.pth'
+contrastive_path: 'D:\project\Cake\MiniROAD\best_model.pth'
 freeze_backbone: False
 bg_class_idx: 0
 warmup_epoch: 1

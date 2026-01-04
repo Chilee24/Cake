@@ -25,11 +25,10 @@ def train_one_epoch(trainloader, model, criterion, optimizer, scaler, epoch, wri
         
         if scaler is not None:
             with torch.cuda.amp.autocast():
-                # Model mới chỉ nhận 4 tham số này (không còn rgb_shuff)
                 out_dict = model(rgb_anchor, flow_anchor, labels, labels_per_frame=labels_per_frame)
                 loss = criterion(out_dict, labels)
             
-            # 3. BACKWARD & OPTIMIZER (Mixed Precision)
+            # 3. BACKWARD
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=10.0)
@@ -46,48 +45,37 @@ def train_one_epoch(trainloader, model, criterion, optimizer, scaler, epoch, wri
         # 4. MEMORY BANK UPDATE
         with torch.no_grad():
             k_cls = out_dict['k_cls'].detach()
-            if hasattr(model, 'module'):
-                model.module.update_queue(k_cls, labels)
-            else:
-                model.update_queue(k_cls, labels)
+            model.update_queue(k_cls, labels)
 
-        # 5. LR SCHEDULER STEP
+        # 5. LR SCHEDULER
         if scheduler is not None:
             scheduler.step()
 
-        # 6. LOGGING & MONITORING
+        # 6. LOGGING
         loss_val = loss.item()
         epoch_loss += loss_val
         current_lr = optimizer.param_groups[0]["lr"]
 
-        # --- MONITORING MỚI (KHỚP VỚI CHIẾN LƯỢC KIỀNG 3 CHÂN) ---
+        # --- MONITORING (CẬP NHẬT KEY CHO KHỚP MODEL MỚI) ---
         postfix_dict = {'loss': f"{loss_val:.4f}", 'lr': f"{current_lr:.7f}"}
         
         if it % 50 == 0:
              with torch.no_grad():
-                # Lấy các biến từ output mới
-                q_core = out_dict['q_core']     # Action Focus
-                q_mask = out_dict['q_mask']     # Robustness
-                q_ctx  = out_dict['q_context']  # Context (Negative)
+                # [SỬA ĐỔI QUAN TRỌNG]
+                q_core = out_dict['q_core']     # Action Focus / Pure BG
+                q_aug  = out_dict['q_aug']      # Robustness (Thay vì q_mask)
                 k      = out_dict['k_cls']      # Teacher
 
-                # 1. Sim Core (Kỳ vọng CAO): Action sạch giống Teacher không?
+                # 1. Sim Core: Mức độ giống Teacher của nhánh Semantic
                 sim_core = torch.einsum('nc,nc->n', [q_core, k]).mean().item()
                 
-                # 2. Sim Mask (Kỳ vọng CAO): Action bị che giống Teacher không?
-                sim_mask = torch.einsum('nc,nc->n', [q_mask, k]).mean().item()
+                # 2. Sim Aug: Mức độ giống Teacher của nhánh Robustness
+                sim_aug = torch.einsum('nc,nc->n', [q_aug, k]).mean().item()
                 
-                # 3. Sim Context (Kỳ vọng THẤP): Nền giống Teacher không? (Chỉ tính trên Action sample)
-                # Lọc những mẫu Action để xem chỉ số này (vì BG sample context là 0)
-                is_action = (labels != model.bg_class_idx if not hasattr(model, 'module') else labels != model.module.bg_class_idx)
-                if is_action.sum() > 0:
-                    sim_ctx = torch.einsum('nc,nc->n', [k[is_action], q_ctx[is_action]]).mean().item()
-                else:
-                    sim_ctx = 0.0
+                # (Đã bỏ Sim Context vì không còn nhánh này)
 
                 postfix_dict['Core'] = f"{sim_core:.2f}"
-                postfix_dict['Mask'] = f"{sim_mask:.2f}"
-                postfix_dict['Ctx']  = f"{sim_ctx:.2f}"
+                postfix_dict['Aug']  = f"{sim_aug:.2f}" # Đổi tên hiển thị
 
         pbar.set_postfix(postfix_dict)
 

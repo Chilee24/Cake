@@ -9,19 +9,28 @@ class StrictInfoNCELoss(nn.Module):
         super(StrictInfoNCELoss, self).__init__()
         self.T = cfg.get("temperature", 0.07)
         self.bg_class_idx = cfg.get("bg_class_idx", 0)
+        self.bg_separation_bias = 0.0 # Hệ số phạt Nền
 
     def forward(self, output_dict, labels):
-        # 1. UNPACK OUTPUT
-        # Lưu ý: Key tên là q_core, q_mask thay vì q_cls, q_shuff cũ
-        q_core = output_dict['q_core']       # [B, D] (Positive 1: Focus)
-        q_mask = output_dict['q_mask']       # [B, D] (Positive 2: Robustness)
-        q_context = output_dict['q_context'] # [B, D] (Negative: Context/BG)
-        k = output_dict['k_cls']             # [B, D] (Teacher Target)
-        queues = output_dict['queues']       # [C, D, K]
+        # 1. UNPACK & STACK (Gộp Core và Aug lại)
+        # q_core: [B, D], q_aug: [B, D] -> q_all: [2B, D]
+        q_all = torch.cat([output_dict['q_core'], output_dict['q_aug']], dim=0)
         
-        batch_size = q_core.shape[0]
+        # Teacher k cũng phải nhân đôi để khớp với q_all
+        # k: [B, D] -> k_all: [2B, D]
+        k = output_dict['k_cls']
+        k_all = torch.cat([k, k], dim=0)
+        
+        # Labels cũng nhân đôi
+        labels_all = torch.cat([labels, labels], dim=0)
+        
+        # Lấy Queue
+        queues = output_dict['queues'] # [C, D, K]
+        
+        # Dimensions
+        total_batch_size = q_all.shape[0] # 2B
         num_classes, dim, K = queues.shape
-        device = q_core.device
+        device = q_all.device
 
         # 2. FLATTEN QUEUE
         # [D, N_All]
@@ -29,96 +38,82 @@ class StrictInfoNCELoss(nn.Module):
         # [N_All]
         queue_labels = torch.arange(num_classes, device=device).unsqueeze(1).repeat(1, K).view(-1)
 
-        # --- 3. TÍNH LOGITS CHO 2 NHÁNH SONG SONG ---
+        # --- 3. TÍNH LOGITS (Unified) ---
         
-        # A. Shared Hard Negative (Teacher đẩy Context)
-        # Chiến thuật Teacher-Centric: Dùng k để đẩy q_context
-        sim_neg_ctx = torch.einsum('nc,nc->n', [k, q_context]).unsqueeze(-1) / self.T
+        # A. Positive: q_all giống k_all
+        # [2B, 1]
+        sim_pos = torch.einsum('nc,nc->n', [q_all, k_all]).unsqueeze(-1) / self.T
         
-        # B. Nhánh CORE (Anchor = q_core)
-        # Pos: q_core -> k
-        sim_pos_core = torch.einsum('nc,nc->n', [q_core, k]).unsqueeze(-1) / self.T
-        # Queue: q_core -> Queue
-        sim_queue_core = torch.mm(q_core, queue_flat) / self.T
+        # B. Queue Negatives: q_all giống Queue
+        # [2B, N_All]
+        sim_queue = torch.mm(q_all, queue_flat) / self.T
         
-        # C. Nhánh MASK (Anchor = q_mask)
-        # Pos: q_mask -> k
-        sim_pos_mask = torch.einsum('nc,nc->n', [q_mask, k]).unsqueeze(-1) / self.T
-        # Queue: q_mask -> Queue
-        sim_queue_mask = torch.mm(q_mask, queue_flat) / self.T
+        # --- 4. ÁP DỤNG BIAS PHẠT NỀN (Vectorized) ---
         
-        # --- 4. TỔ CHỨC LOGITS ---
-        # Cấu trúc chung: [Cột 0: Pos(k) | Cột 1: Neg(Ctx) | Cột 2+: Queue]
-        logits_core = torch.cat([sim_pos_core, sim_neg_ctx, sim_queue_core], dim=1)
-        logits_mask = torch.cat([sim_pos_mask, sim_neg_ctx, sim_queue_mask], dim=1)
+        # Tạo các mask logic trên batch lớn (2B)
+        is_bg_in_queue = (queue_labels == self.bg_class_idx).unsqueeze(0)    # [1, N_All]
+        is_action_in_queue = (~is_bg_in_queue)                               # [1, N_All]
         
-        # --- 5. TẠO MASK (LOGIC GATES) ---
-        
-        # Biến logic
-        is_bg_sample = (labels == self.bg_class_idx) # [B]
-        is_bg_in_queue = (queue_labels == self.bg_class_idx) # [N_All]
-        
-        # A. Mask IGNORE (Loại bỏ các ô không tính)
-        
-        # 1. Ignore Context (Cột 1):
-        # Nếu là Background Sample -> x_context là ảnh đen -> IGNORE
-        mask_ignore_ctx = is_bg_sample.unsqueeze(1) # [B, 1]
-        
-        # 2. Ignore Queue (Cột 2+):
-        # Floating BG: Nếu Anchor là BG VÀ Queue Item là BG -> IGNORE
-        mask_ignore_queue = is_bg_sample.unsqueeze(1) & is_bg_in_queue.unsqueeze(0) # [B, N_All]
-        
-        # 3. Pos (Cột 0): Không bao giờ ignore
-        mask_ignore_pos = torch.zeros(batch_size, 1, device=device, dtype=torch.bool)
-        
-        # Tổng hợp Mask Ignore [1, 1, N_All]
-        mask_ignore = torch.cat([mask_ignore_pos, mask_ignore_ctx, mask_ignore_queue], dim=1)
-        
-        # B. Mask POSITIVE (Xác định đồng minh)
-        
-        # Ta tạo mask này dựa trên kích thước của logits (giống nhau cho cả core và mask)
-        mask_pos = torch.zeros_like(logits_core, dtype=torch.bool)
-        
-        # 1. Cột 0 (Teacher): Luôn là Positive
-        mask_pos[:, 0] = True 
-        
-        # 2. Cột 1 (Context): Luôn là Negative (False)
-        
-        # 3. Cột 2+ (Queue): Positive nếu cùng class, TRỪ KHI là Background
-        is_same_class = labels.unsqueeze(1) == queue_labels.unsqueeze(0)
-        mask_pos[:, 2:] = is_same_class
-        # Nếu Anchor là BG, thì dù Queue có là BG (same class) cũng KHÔNG coi là Positive (Floating)
-        mask_pos[is_bg_sample, 2:] = False 
+        is_bg_anchor = (labels_all == self.bg_class_idx).unsqueeze(1)        # [2B, 1]
+        is_action_anchor = (~is_bg_anchor)                                   # [2B, 1]
 
-        # --- 6. HÀM TÍNH LOSS CHUNG ---
-        def compute_nce(logits, mask_ignore, mask_pos):
-            # a. Ổn định số học
-            logits_max, _ = torch.max(logits, dim=1, keepdim=True)
-            logits = logits - logits_max.detach()
-            
-            # b. Apply Ignore
-            logits = logits.masked_fill(mask_ignore, -1e9)
-            exp_logits = torch.exp(logits)
-            
-            # c. Tính Mẫu số (Pos + Neg)
-            # Negative = (Not Pos) AND (Not Ignored)
-            mask_neg = (~mask_pos) & (~mask_ignore)
-            sum_exp_neg = (exp_logits * mask_neg.float()).sum(1, keepdim=True)
-            denominator = exp_logits + sum_exp_neg
-            
-            # d. Log Prob
-            log_prob = logits - torch.log(denominator + 1e-8)
-            
-            # e. Chỉ lấy loss tại các vị trí Positive
-            loss = -(log_prob * mask_pos.float()).sum() / (mask_pos.sum() + 1e-8)
-            return loss
-
-        # --- 7. TÍNH TOÁN CUỐI CÙNG ---
-        loss_core = compute_nce(logits_core, mask_ignore, mask_pos)
-        loss_mask = compute_nce(logits_mask, mask_ignore, mask_pos)
+        # Bias 1: Anchor Action đẩy Queue BG
+        bias_action_vs_bg = (is_action_anchor & is_bg_in_queue).float() * self.bg_separation_bias
         
-        # Cộng gộp 2 loss (chia đôi để giữ scale gradient ổn định)
-        return (loss_core + loss_mask) / 2.0
+        # Bias 2: Anchor BG đẩy Queue Action
+        bias_bg_vs_action = (is_bg_anchor & is_action_in_queue).float() * self.bg_separation_bias
+        
+        # Cộng Bias vào Logits Queue
+        sim_queue = sim_queue + bias_action_vs_bg + bias_bg_vs_action
+
+        # --- 5. TỔ CHỨC LOGITS ---
+        # [2B, 1 + N_All] -> Cột 0 là Pos, Cột 1+ là Queue
+        logits = torch.cat([sim_pos, sim_queue], dim=1)
+        
+        # --- 6. MASKING (Logic Gates) ---
+        
+        # A. Mask Ignore (Floating BG)
+        # Nếu Anchor là BG VÀ Queue Item là BG -> Ignore
+        is_bg_queue_row = (queue_labels == self.bg_class_idx).unsqueeze(0)
+        mask_ignore_queue = is_bg_anchor & is_bg_queue_row # [2B, N_All]
+        
+        mask_ignore_pos = torch.zeros(total_batch_size, 1, device=device, dtype=torch.bool)
+        mask_ignore = torch.cat([mask_ignore_pos, mask_ignore_queue], dim=1)
+        
+        # B. Mask Positive (Class Matching)
+        mask_pos = torch.zeros_like(logits, dtype=torch.bool)
+        mask_pos[:, 0] = True # Teacher luôn là Pos
+        
+        # Check Queue items cùng class với Anchor
+        is_same_class = labels_all.unsqueeze(1) == queue_labels.unsqueeze(0)
+        mask_pos[:, 1:] = is_same_class
+        
+        # TRỪ KHI: Cả hai đều là BG (Floating BG không kéo nhau)
+        # Đoạn này thực ra đã bị Mask Ignore chặn rồi, nhưng set False cho chắc
+        mask_pos[is_bg_anchor.squeeze(1), 1:] = False
+
+        # --- 7. TÍNH LOSS FINAL ---
+        # Ổn định số học
+        logits_max, _ = torch.max(logits, dim=1, keepdim=True)
+        logits = logits - logits_max.detach()
+        
+        # Apply Ignore
+        logits = logits.masked_fill(mask_ignore, -1e9)
+        exp_logits = torch.exp(logits)
+        
+        # Mẫu số = Pos + Neg (Neg là những thằng không phải Pos và không bị Ignore)
+        mask_neg = (~mask_pos) & (~mask_ignore)
+        sum_exp_neg = (exp_logits * mask_neg.float()).sum(1, keepdim=True)
+        denominator = exp_logits + sum_exp_neg
+        
+        # Log Prob
+        log_prob = logits - torch.log(denominator + 1e-8)
+        
+        # Chỉ lấy loss tại các vị trí Positive
+        # Chia cho tổng số lượng Positive để normalize
+        loss = -(log_prob * mask_pos.float()).sum() / (mask_pos.sum() + 1e-8)
+        
+        return loss
 
 @CRITERIONS.register('CONTRASTIVE')
 class SupConMROADLoss(nn.Module):

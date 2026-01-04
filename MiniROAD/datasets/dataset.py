@@ -34,9 +34,10 @@ class ContrastiveOADDataset(data.Dataset):
         self.inputs = [] 
         
         data_name = cfg['data_name']
+        # Load list video
         self.vids = json.load(open(cfg['video_list_path']))[data_name][mode + '_session_set']
         
-        # 1. LOAD DATA
+        # 1. LOAD DATA & PADDING
         self._load_features(cfg)
         
         # 2. KHỞI TẠO GRID
@@ -54,13 +55,22 @@ class ContrastiveOADDataset(data.Dataset):
         self.rgb_inputs = {}
         self.flow_inputs = {}
         
-        # Lấy feature dim (Giả sử bạn đã có biến global FEATURE_SIZES hoặc hardcode)
+        # Feature dim (Nên lấy từ config nếu có thể, ở đây tạm hardcode cho THUMOS)
         rgb_dim = 2048 
         flow_dim = 1024
         
-        dummy_target = np.zeros((self.window_size - 1, self.num_classes))
-        dummy_rgb = np.zeros((self.window_size - 1, rgb_dim))
-        dummy_flow = np.zeros((self.window_size - 1, flow_dim))
+        # [QUAN TRỌNG] Padding để đảm bảo dự đoán được từ frame đầu tiên
+        # Padding length = window_size - 1
+        pad_len = self.window_size - 1
+        
+        # Dummy Target: Toàn bộ là Background
+        dummy_target = np.zeros((pad_len, self.num_classes))
+        # Nếu Background là class 0, thì one-hot tại 0 phải là 1 (hoặc để 0 hết nếu dùng argmax sau này cũng ra 0)
+        # Tuy nhiên để an toàn, ta nên set chuẩn one-hot cho BG nếu cần
+        dummy_target[:, self.bg_class_idx] = 1.0 
+        
+        dummy_rgb = np.zeros((pad_len, rgb_dim))
+        dummy_flow = np.zeros((pad_len, flow_dim))
         
         print(f"--> [Dataset] Pre-loading features into RAM ({self.mode})...")
         for vid in self.vids:
@@ -68,14 +78,11 @@ class ContrastiveOADDataset(data.Dataset):
             rgb = np.load(osp.join(self.root_path, self.rgb_type, vid + '.npy'))
             flow = np.load(osp.join(self.root_path, self.flow_type, vid + '.npy'))
             
-            if self.training:
-                self.target_all[vid] = np.concatenate((dummy_target, target), axis=0)
-                self.rgb_inputs[vid] = np.concatenate((dummy_rgb, rgb), axis=0)
-                self.flow_inputs[vid] = np.concatenate((dummy_flow, flow), axis=0)
-            else:
-                self.target_all[vid] = target
-                self.rgb_inputs[vid] = rgb
-                self.flow_inputs[vid] = flow
+            # [SỬA ĐỔI] Luôn padding cho cả Train và Test
+            # Để đảm bảo input luôn đủ dài và cover được frame đầu
+            self.target_all[vid] = np.concatenate((dummy_target, target), axis=0)
+            self.rgb_inputs[vid] = np.concatenate((dummy_rgb, rgb), axis=0)
+            self.flow_inputs[vid] = np.concatenate((dummy_flow, flow), axis=0)
 
     def shuffle_indices(self):
         self.inputs = []
@@ -83,13 +90,17 @@ class ContrastiveOADDataset(data.Dataset):
         
         for vid in self.vids:
             target = self.target_all[vid]
+            total_frames = target.shape[0]
+            
+            # Random offset cho stride
             seed = np.random.randint(self.stride)
             
             # Sliding Window
-            for start in range(seed, target.shape[0] - self.window_size + 1, self.stride):
+            # start chạy từ seed, đảm bảo end không vượt quá total_frames
+            for start in range(seed, total_frames - self.window_size + 1, self.stride):
                 end = start + self.window_size
                 
-                # Lấy vector nhãn frame cuối để xác định label chính
+                # Label của window là label của frame cuối cùng
                 last_frame_vec = target[end - 1] 
                 label_idx = np.argmax(last_frame_vec)
                 
@@ -101,14 +112,16 @@ class ContrastiveOADDataset(data.Dataset):
         self.inputs = []
         for vid in self.vids:
             target = self.target_all[vid]
-            for w_start in range(0, target.shape[0] - self.window_size + 1, 1):
-                 w_end = w_start + self.window_size
-                 if self.training:
-                     last_frame_vec = target[w_end - 1]
-                 else:
-                     last_frame_vec = target[w_end - 1]
+            total_frames = target.shape[0]
+            
+            # Test stride = 1 (Dense evaluation)
+            for start in range(0, total_frames - self.window_size + 1, 1):
+                 end = start + self.window_size
+                 
+                 last_frame_vec = target[end - 1]
                  label_idx = np.argmax(last_frame_vec)
-                 self.inputs.append([vid, w_start, w_end, label_idx])
+                 
+                 self.inputs.append([vid, start, end, label_idx])
 
     def __getitem__(self, index):
         vid, start, end, label_idx = self.inputs[index]
@@ -122,7 +135,7 @@ class ContrastiveOADDataset(data.Dataset):
         rgb_tensor = torch.tensor(rgb_input.astype(np.float32))
         flow_tensor = torch.tensor(flow_input.astype(np.float32))
 
-        # 3. LẤY NHÃN TỪNG FRAME
+        # 3. LẤY NHÃN LỊCH SỬ (QUAN TRỌNG CHO LOSS)
         labels_per_frame = torch.tensor(np.argmax(target_window, axis=1), dtype=torch.long)
 
         return {

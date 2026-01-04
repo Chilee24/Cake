@@ -7,6 +7,8 @@ import os
 import os.path as osp
 import numpy as np
 import random
+
+# Import các module từ dự án của bạn
 from utils import get_logger, create_outdir
 from model import build_model
 from datasets import build_data_loader
@@ -23,37 +25,33 @@ def set_seed(seed):
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
 
-    
 def fill_memory_bank(loader, model, device):
+    """
+    Chạy 1 vòng (không train) để đẩy feature thật vào Memory Queue trước khi train.
+    """
     print(f"--> [Warm-up] Starting to fill Memory Bank (Size per class: {model.K})...")
     model.eval() 
     
     with torch.no_grad():
         pbar = tqdm(loader, desc="Filling Queue")
-        
         for batch_data in pbar:
             rgb_anchor = batch_data['rgb_anchor'].to(device, non_blocking=True)
             flow_anchor = batch_data['flow_anchor'].to(device, non_blocking=True)
             labels = batch_data['labels'].to(device, non_blocking=True)
-
-            # --- SỬA ĐOẠN NÀY (Thêm labels_per_frame) ---
+            
+            # [QUAN TRỌNG] Lấy labels_per_frame để Generator hoạt động
             labels_per_frame = batch_data.get('labels_per_frame', None)
             if labels_per_frame is not None:
                 labels_per_frame = labels_per_frame.to(device, non_blocking=True)
             
-            # Truyền đủ 4 tham số: rgb, flow, labels, labels_per_frame
+            # Forward qua model (Teacher sẽ update queue)
+            # Lưu ý: Teacher K tự động update queue bên trong hàm forward hoặc gọi hàm update_queue
             out_dict = model(rgb_anchor, flow_anchor, labels, labels_per_frame=labels_per_frame)
-            # ----------------------------------------------
             
             k_cls = out_dict['k_cls']
-            
-            if hasattr(model, 'module'):
-                model.module.update_queue(k_cls, labels)
-            else:
-                model.update_queue(k_cls, labels)
+            model.update_queue(k_cls, labels)
                 
     print("--> [Warm-up] Memory Bank filled with real features!")
-
 
 def main():
     parser = argparse.ArgumentParser()
@@ -74,15 +72,13 @@ def main():
     set_seed(20)
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-    # Tạo identifier riêng
+    # Tạo identifier
     identifier = f'Contrastive_{cfg["model"]}_{cfg["data_name"]}'
     if 'rgb_type' in cfg:
         identifier += f'_{cfg["rgb_type"]}'
         
-    # result_path là đường dẫn thư mục output thực tế (VD: ./output/Contrastive_..._timestamp)
     result_path = create_outdir(osp.join(cfg['output_path'], identifier))
     
-    # Init Logger & Tensorboard
     logger = get_logger(result_path)
     logger.info(f"Running Experiment: {identifier}")
     logger.info(cfg)
@@ -95,6 +91,11 @@ def main():
 
     # --- 3. MODEL & CRITERION ---
     model = build_model(cfg, device) 
+    # Nếu dùng DataParallel (nhiều GPU)
+    if torch.cuda.device_count() > 1:
+        print(f"--> Using {torch.cuda.device_count()} GPUs!")
+        model = torch.nn.DataParallel(model)
+
     evaluate = build_eval(cfg)
     train_one_epoch = build_trainer(cfg)
     criterion = build_criterion(cfg, device) 
@@ -119,16 +120,22 @@ def main():
 
     logger.info(f'Dataset: {cfg["data_name"]} | Model: {cfg["model"]}')    
     logger.info(f'LR:{cfg["lr"]} | Decay:{cfg["weight_decay"]} | Window:{cfg["window_size"]} | Batch:{cfg["batch_size"]}') 
-    logger.info(f'Epochs:{cfg["num_epoch"]} | Params:{total_params/1e6:.1f}M | Optimizer: {cfg.get("optimizer", "Adam")}')
+    logger.info(f'Epochs:{cfg["num_epoch"]} | Params:{total_params/1e6:.1f}M')
     logger.info(f'Output Path:{result_path}')
 
     # --- 6. EVALUATION MODE ---
     if args.eval is not None:
         logger.info(f"Loading checkpoint from {args.eval}...")
         checkpoint = torch.load(args.eval, map_location=device)
-        # Handle state dict keys
         state_dict = checkpoint['model'] if 'model' in checkpoint else checkpoint
-        model.load_state_dict(state_dict)
+        
+        # Xử lý key 'module.' nếu checkpoint cũ train bằng DataParallel
+        if hasattr(model, 'module'):
+            model.module.load_state_dict(state_dict)
+        else:
+             # Nếu model hiện tại không phải DP nhưng checkpoint có module. -> remove
+            new_state_dict = {k.replace('module.', ''): v for k,v in state_dict.items()}
+            model.load_state_dict(new_state_dict)
         
         cac_score = evaluate(testloader, model, criterion, epoch=0, writer=None)
         logger.info(f'{cfg["task"]} Evaluation -> CAC Score (Action): {cac_score:.2f}%')
@@ -136,7 +143,7 @@ def main():
 
     # --- 7. TRAINING LOOP ---
     
-    # Lấp đầy Memory Bank trước khi train
+    # Warm-up Memory Bank
     fill_memory_bank(trainloader, model, device)
 
     best_score, best_epoch = 0.0, 0
@@ -147,43 +154,42 @@ def main():
             trainloader, model, criterion, optimizer, scaler, epoch, writer, scheduler=None
         )
         
-        # B. SHUFFLE DATASET
+        # B. SHUFFLE DATASET (Quan trọng cho Sliding Window ngẫu nhiên)
         if hasattr(trainloader.dataset, 'shuffle_indices'):
             trainloader.dataset.shuffle_indices()
         
         # C. VALIDATION
+        # Có thể chỉnh freq để eval thưa hơn nếu muốn (ví dụ: if epoch % 5 == 0:)
         cac_score = evaluate(testloader, model, criterion, epoch, writer)
         
         # D. SCHEDULER STEP
         if scheduler is not None:
             scheduler.step()
         
-        # E. SAVE CHECKPOINT (MỌI EPOCH)
+        # E. SAVE CHECKPOINT
         checkpoint = {
-            'epoch': epoch, # Lưu epoch hiện tại
-            'model': model.state_dict(),
+            'epoch': epoch,
+            'model': model.state_dict(), # Sẽ tự handle DataParallel bên trong state_dict()
             'optimizer': optimizer.state_dict(),
             'scaler': scaler.state_dict() if scaler else None,
             'best_cac': best_score
         }
         
-        # 1. Lưu latest (đè lên nhau để resume)
+        # 1. Save Latest
         torch.save(checkpoint, osp.join(result_path, 'latest_model.pth'))
         
-        # 2. Lưu từng epoch (để visualize sau này) - Lưu vào subfolder 'ckpts' cho gọn
+        # 2. Save Epoch (Lưu vào thư mục con ckpts)
         ckpt_dir = osp.join(result_path, 'ckpts')
         os.makedirs(ckpt_dir, exist_ok=True)
-        
-        epoch_save_path = osp.join(ckpt_dir, f'checkpoint_epoch_{epoch}.pth')
-        torch.save(checkpoint, epoch_save_path)
-        # print(f"--> Saved checkpoint: {epoch_save_path}") # Comment bớt cho đỡ rác log
+        # Chỉ lưu mỗi 5 epoch hoặc 10 epoch để tiết kiệm ổ cứng nếu cần
+        # if epoch % 5 == 0:
+        torch.save(checkpoint, osp.join(ckpt_dir, f'checkpoint_epoch_{epoch}.pth'))
             
-        # 3. Lưu Best Model
+        # 3. Save Best
         if cac_score > best_score:
             best_score = cac_score
             best_epoch = epoch
-            best_save_path = osp.join(result_path, 'best_model.pth')
-            torch.save(checkpoint, best_save_path) # Lưu cả checkpoint thay vì chỉ state_dict
+            torch.save(checkpoint, osp.join(result_path, 'best_model.pth'))
             logger.info(f"--> New Best CAC: {best_score:.2f}%! Saved best_model.pth")
 
         # F. LOGGING
