@@ -30,6 +30,4 @@ no_rgb: False
 #contrastive_path: 'D:\project\Cake\MiniROAD\best_model.pth'
 freeze_backbone: False
 bg_class_idx: 0
-warmup_epoch: 1
-warmup_factor: 0.1
-warmup_method: 'linear'
+focal_alpha: 0.5
