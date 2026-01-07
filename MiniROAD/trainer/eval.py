@@ -171,14 +171,30 @@ class Evaluate(nn.Module):
         with torch.no_grad():
             pred_scores, gt_targets = [], []
             start = time.time()
+            
+            # Lưu ý: Dataloader Eval trả về toàn bộ video (Batch=1, Seq=T, Dim=K)
             for rgb_input, flow_input, target in tqdm(dataloader, desc='Evaluation:', leave=False):
                 rgb_input, flow_input, target = rgb_input.to(device), flow_input.to(device), target.to(device)
+                
                 out_dict = model(rgb_input, flow_input)
-                pred_logit = out_dict['logits']
-                prob_val = pred_logit.squeeze().cpu().numpy()
-                target_batch = target.squeeze().cpu().numpy()
+                pred_logit = out_dict['logits'] # (1, T, K)
+                
+                # Chuyển sang Numpy
+                # prob_val shape: (T, K)
+                prob_val = pred_logit.squeeze(0).cpu().numpy() 
+                target_batch = target.squeeze(0).cpu().numpy()
+                
+                # --- SỬA ĐỔI 2: Padding cột giả (Dummy Column) ---
+                # Tạo cột 0 (T, 1)
+                T = prob_val.shape[0]
+                dummy_col = np.zeros((T, 1))
+                
+                # Ghép vào đầu: [Dummy, Action1, Action2...] -> Shape (T, K+1)
+                prob_val = np.concatenate((dummy_col, prob_val), axis=1)
+                target_batch = np.concatenate((dummy_col, target_batch), axis=1)
+                
                 pred_scores += list(prob_val) 
-                gt_targets += list(target_batch)
+                gt_targets += list(target_batch)  
             end = time.time()
             num_frames = len(gt_targets)
             result = self.eval_method(pred_scores, gt_targets, self.all_class_names, self.data_processing, self.metric)

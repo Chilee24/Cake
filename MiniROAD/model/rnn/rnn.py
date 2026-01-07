@@ -207,12 +207,13 @@ class MROAD(nn.Module):
 
         self.hidden_dim = cfg['hidden_dim']
         self.num_layers = cfg['num_layers']
-        self.out_dim = cfg['num_classes']
+        self.out_dim = cfg['num_classes'] 
+        
         self.window_size = cfg['window_size']
-
         self.relu = nn.ReLU()
         self.embedding_dim = cfg['embedding_dim']
-        # --- BACKBONE ---
+
+        # --- BACKBONE (Giữ nguyên MiniROAD) ---
         self.gru = nn.GRU(self.embedding_dim, self.hidden_dim, self.num_layers, batch_first=True)
         self.layer1 = nn.Sequential(
             nn.Linear(self.input_dim, self.embedding_dim),
@@ -220,13 +221,15 @@ class MROAD(nn.Module):
             nn.ReLU(),
             nn.Dropout(p=cfg['dropout']),
         )
-        # --- HEAD ---
+
+        # --- NEW HEAD (ACTIONFORMER STYLE) ---
         self.f_classification = nn.Sequential(
             nn.Linear(self.hidden_dim, self.out_dim)
         )
         
         self.h0 = torch.zeros(self.num_layers, 1, self.hidden_dim)
 
+        # --- LOAD WEIGHTS TỪ CONTRASTIVE ---
         contrastive_path = cfg.get('contrastive_path', None)
         if contrastive_path:
             self._load_from_contrastive(contrastive_path)
@@ -236,12 +239,7 @@ class MROAD(nn.Module):
 
     def _load_from_contrastive(self, path):
         print(f"--> [Model] Loading Contrastive weights from: {path}")
-        
-        # --- SỬA DÒNG NÀY: Thêm weights_only=False ---
         checkpoint = torch.load(path, map_location='cpu', weights_only=False)
-        # ---------------------------------------------
-
-        # Lấy state_dict (xử lý trường hợp lưu cả optimizer/epoch)
         state_dict = checkpoint['model'] if 'model' in checkpoint else checkpoint
         
         new_state_dict = {}
@@ -252,7 +250,7 @@ class MROAD(nn.Module):
                     new_state_dict[new_key] = v
             
         msg = self.load_state_dict(new_state_dict, strict=False)
-        print(f"--> [Model] Weights loaded. Missing keys (expected for head): {msg.missing_keys}")
+        print(f"--> [Model] Weights loaded. Missing keys (expected for new head): {msg.missing_keys}")
 
     def _freeze_backbone(self):
         print("--> [Model] FREEZING Backbone (Layer1 & GRU). Only training Head.")
@@ -263,28 +261,38 @@ class MROAD(nn.Module):
                 param.requires_grad = True
 
     def forward(self, rgb_input, flow_input, return_embedding=False):
+        # 1. Feature Aggregation
         if self.use_rgb and self.use_flow:
             x = torch.cat((rgb_input, flow_input), 2)
         elif self.use_rgb:
             x = rgb_input
         elif self.use_flow:
             x = flow_input
+            
+        # 2. Backbone Forward
         x = self.layer1(x)
         B, _, _ = x.shape
         h0 = self.h0.expand(-1, B, -1).to(x.device)
         ht, _ = self.gru(x, h0) 
         ht = self.relu(ht)
+
+        # Trả về embedding nếu cần (cho contrastive learning hoặc visualization)
         if return_embedding:
             return ht[:, -1, :]
-        logits = self.f_classification(ht)
+
+        # 3. New Classification Head
+        # Input: Hidden state sequence (B, T, Hidden_Dim)
+        # Output: Logits (B, T, K)
+        logits = self.f_classification(ht) 
+
         out_dict = {}
         if self.training:
             out_dict['logits'] = logits
         else:
-            pred_scores = F.softmax(logits, dim=-1)
+            pred_scores = torch.sigmoid(logits)
             out_dict['logits'] = pred_scores
+            
         return out_dict
-
 @META_ARCHITECTURES.register("MiniROADA")
 class MROADA(nn.Module):
     

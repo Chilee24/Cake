@@ -209,73 +209,63 @@ class SupConMROADLoss(nn.Module):
 @CRITERIONS.register('FOCAL')
 class FocalOadLoss(nn.Module):
     """
-    Focal Loss for Online Action Detection.
-    Công thức: L = - alpha * (1 - p)^gamma * target * log(p)
+    Binary Focal Loss for ActionFormer-style Head (Sigmoid).
     
-    Mục tiêu:
-    - Giảm trọng số của các mẫu dễ đoán (Background).
-    - Tập trung Gradient vào các mẫu khó (Action).
+    Công thức cho mỗi class k (độc lập):
+        FL(p_t) = -alpha_t * (1 - p_t)^gamma * log(p_t)
+    
+    Trong đó:
+        p_t = p      nếu y=1 (Action)
+        p_t = 1 - p  nếu y=0 (Background/Other Action)
     """
     
     def __init__(self, cfg, reduction='mean'):
         super(FocalOadLoss, self).__init__()
         self.reduction = reduction
-        self.gamma = cfg.get('focal_gamma', 2.0) # Mặc định gamma = 2.0
-        self.alpha = cfg.get('focal_alpha', 0.5) # Mặc định alpha = 0.25 (cân bằng Positive/Negative)
-        
-        # Nếu muốn alpha riêng cho từng class (ví dụ giảm BG mạnh hơn)
-        # cfg['class_weights'] nên là list [1.0, 1.0, ..., 0.1]
-        self.class_weights = cfg.get('class_weights', None)
-        if self.class_weights is not None:
-            self.class_weights = torch.tensor(self.class_weights).float()
+        self.gamma = cfg.get('focal_gamma', 2.0)
+        self.alpha = cfg.get('focal_alpha', 0.25) 
 
     def forward(self, out_dict, target):
         """
-        out_dict['logits']: (B, Seq, Num_Classes)
-        target: (B, Seq, Num_Classes) - Dạng One-hot hoặc Multi-hot
+        out_dict['logits']: (B, Seq, K) - Logits thô chưa qua Sigmoid
+        target: (B, Seq, K) - One-hot (hoặc Multi-hot), Cột BG đã bị xóa.
         """
         logits = out_dict['logits']
         
-        # 1. OAD Logic: Chỉ lấy frame cuối cùng
-        # (B, Seq, C) -> (B, C)
+        # 1. OAD Logic: Chỉ tính Loss cho frame cuối cùng
+        # (B, Seq, K) -> (B, K)
         logits = logits[:, -1, :].contiguous()
         target = target[:, -1, :].contiguous()
         
-        return self.focal_loss(logits, target)
+        return self.sigmoid_focal_loss(logits, target)
 
-    def focal_loss(self, logits, target):
-        # 2. Tính Log Softmax & Probabilities
-        # log_softmax ổn định hơn log(softmax)
-        log_p = F.log_softmax(logits, dim=-1) 
-        p = torch.exp(log_p) # (B, C)
+    def sigmoid_focal_loss(self, logits, target):
+        # 2. Tính BCE Loss cơ bản (chưa nhân Focal term)
+        # Sử dụng binary_cross_entropy_with_logits để ổn định số học (tự động sigmoid bên trong)
+        # reduction='none' để giữ nguyên shape (B, K) để nhân với trọng số sau
+        bce_loss = F.binary_cross_entropy_with_logits(logits, target, reduction='none')
         
-        # 3. Tính Focal Term: (1 - p)^gamma
-        # Nếu p gần 1 (dễ đoán) -> (1-p) gần 0 -> Loss bị triệt tiêu
-        focal_term = (1 - p) ** self.gamma
+        # 3. Tính xác suất p (để tính Focal term)
+        p = torch.sigmoid(logits)
         
-        # 4. Tính Cross Entropy cơ bản: - target * log(p)
-        ce_loss = -target * log_p
+        # 4. Tính p_t (Xác suất dự đoán đúng theo target)
+        # Nếu target=1 -> p_t = p
+        # Nếu target=0 -> p_t = 1 - p
+        p_t = p * target + (1 - p) * (1 - target)
         
-        # 5. Kết hợp Focal Term
-        loss = focal_term * ce_loss
-        
-        # 6. Áp dụng Alpha (Balancing)
-        # Cách 1: Alpha scalar chung (như paper gốc dùng cho binary)
-        if self.class_weights is None:
-            # Trong Multi-class, alpha thường được áp dụng cho class Positive
-            # Ở đây ta áp dụng alpha=1 cho mọi class, hoặc dùng giá trị từ config
-            # Để đơn giản, ta nhân trực tiếp nếu user set alpha != 1
-            if self.alpha != 1.0:
-                 loss = self.alpha * loss
-        # Cách 2: Alpha riêng cho từng class (Advanced)
-        else:
-            if self.class_weights.device != loss.device:
-                self.class_weights = self.class_weights.to(loss.device)
-            loss = loss * self.class_weights.view(1, -1)
-            
-        # 7. Reduction
+        # 5. Tính Focal Term: (1 - p_t)^gamma
+        # - Nếu đoán đúng (p_t gần 1) -> Term gần 0 -> Loss giảm (Mẫu dễ)
+        # - Nếu đoán sai (p_t gần 0) -> Term lớn -> Loss tăng (Mẫu khó)
+        loss = bce_loss * ((1 - p_t) ** self.gamma)
+
+        # 6. Áp dụng Alpha Balancing
+        if self.alpha >= 0:
+            # alpha_t = alpha nếu target=1, ngược lại (1-alpha)
+            alpha_t = self.alpha * target + (1 - self.alpha) * (1 - target)
+            loss = alpha_t * loss
+
         if self.reduction == 'mean':
-            return loss.sum() / logits.shape[0] 
+            return loss.mean()
         elif self.reduction == 'sum':
             return loss.sum()
         else:

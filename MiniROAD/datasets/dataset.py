@@ -154,36 +154,51 @@ class THUMOSDataset(data.Dataset):
         self.window_size = cfg['window_size']
         self.stride = cfg['stride']
         data_name = cfg['data_name']
-        self.vids = json.load(open(cfg['video_list_path']))[data_name][mode + '_session_set'] # list of video names
-        self.num_classes = cfg['num_classes']
+        self.vids = json.load(open(cfg['video_list_path']))[data_name][mode + '_session_set']
+        self.num_classes = cfg['num_classes'] 
+        self.bg_idx = cfg.get('bg_idx', 0)
         self.inputs = []
-        self._load_features(cfg)
-        self._init_features()
         
-    def _load_features(self, cfg):
+        self._load_targets_only(cfg)
+        self._init_features()
+        print(f"--> [Lazy Mode] Mode: {mode} | Samples: {len(self.inputs)}")
+        
+    def _load_targets_only(self, cfg):
         self.annotation_type = cfg['annotation_type']
         self.rgb_type = cfg['rgb_type']
         self.flow_type = cfg['flow_type']
         self.target_all = {}
-        self.rgb_inputs = {}
-        self.flow_inputs = {}
-        dummy_target = np.zeros((self.window_size-1, self.num_classes))
-        dummy_rgb = np.zeros((self.window_size-1, FEATURE_SIZES[cfg['rgb_type']]))
-        dummy_flow = np.zeros((self.window_size-1, FEATURE_SIZES[cfg['flow_type']]))
+        # Biến để lưu dummy target (Padding), khởi tạo là None
+        dummy_target = None
+
         for vid in self.vids:
-            target = np.load(osp.join(self.root_path, self.annotation_type, vid + '.npy'))
-            rgb = np.load(osp.join(self.root_path, self.rgb_type, vid + '.npy'))
-            flow = np.load(osp.join(self.root_path, self.flow_type, vid + '.npy'))
-            # concatting dummy target at the front 
+            # Load nhãn gốc từ file (Vẫn chứa cột Background)
+            # Shape: [Time, K + 1]
+            raw_target = np.load(osp.join(self.root_path, self.annotation_type, vid + '.npy'))
+            
+            # --- SỬA ĐỔI CHÍNH: XÓA CỘT BACKGROUND ---
+            # Dùng np.delete để xóa cột tại vị trí self.bg_idx
+            # Kết quả: target chỉ còn K cột (chỉ chứa các Action)
+            # Nếu raw là Background [1, 0, ...] -> target thành [0, ...] (Vector 0)
+            target = np.delete(raw_target, self.bg_idx, axis=1)
+            
+            # --- TẠO DUMMY TARGET (Chỉ cần làm 1 lần) ---
+            if dummy_target is None and self.training:
+                # Lấy số chiều thực tế của Action (K)
+                actual_num_classes = target.shape[1]
+                
+                # Tạo vector toàn số 0. 
+                # Ý nghĩa: Padding (màn hình đen) = Không có hành động = Vector 0
+                dummy_target = np.zeros((self.window_size - 1, actual_num_classes))
+            
+            # --- PADDING & LƯU ---
             if self.training:
+                # Nối phần padding (toàn 0) vào trước video
                 self.target_all[vid] = np.concatenate((dummy_target, target), axis=0)
-                self.rgb_inputs[vid] = np.concatenate((dummy_rgb, rgb), axis=0)
-                self.flow_inputs[vid] = np.concatenate((dummy_flow, flow), axis=0)
             else:
+                # Eval: Chỉ lưu target đã cắt bỏ cột nền
                 self.target_all[vid] = target
-                self.rgb_inputs[vid] = rgb
-                self.flow_inputs[vid] = flow
-    
+
     def _init_features(self):
         del self.inputs
         gc.collect()
@@ -193,25 +208,54 @@ class THUMOSDataset(data.Dataset):
             if self.training:
                 seed = np.random.randint(self.stride)
                 for start, end in zip(range(seed, target.shape[0], self.stride), 
-                    range(seed + self.window_size, target.shape[0]+1, self.stride)):
-                    self.inputs.append([
-                        vid, start, end, target[start:end]
-                    ])
+                                      range(seed + self.window_size, target.shape[0] + 1, self.stride)):
+                    self.inputs.append([vid, start, end, target[start:end]])
             else:
+                # Eval: Trả về tọa độ thực
                 start = 0
                 end = target.shape[0]
-                self.inputs.append([
-                    vid, start, end, target[start:end]
-                ])
+                self.inputs.append([vid, start, end, target[start:end]])
 
     def __getitem__(self, index):
         vid, start, end, target = self.inputs[index]
-        rgb_input = self.rgb_inputs[vid][start:end]
-        flow_input = self.flow_inputs[vid][start:end]
-        rgb_input = torch.tensor(rgb_input.astype(np.float32))
-        flow_input = torch.tensor(flow_input.astype(np.float32))
-        target = torch.tensor(target.astype(np.float32))
-        return rgb_input, flow_input, target
+        
+        rgb_path = osp.join(self.root_path, self.rgb_type, vid + '.npy')
+        flow_path = osp.join(self.root_path, self.flow_type, vid + '.npy')
+        
+        rgb_mmap = np.load(rgb_path, mmap_mode='r')
+        flow_mmap = np.load(flow_path, mmap_mode='r')
+        
+        # --- LOGIC PADDING INPUT GIỮ NGUYÊN ---
+        if self.training:
+            pad_len = self.window_size - 1
+            real_start = start - pad_len
+            real_end = end - pad_len
+            
+            if real_start >= 0:
+                rgb_val = rgb_mmap[real_start:real_end]
+                flow_val = flow_mmap[real_start:real_end]
+            else:
+                pad_needed = abs(real_start)
+                rgb_part = rgb_mmap[0:max(0, real_end)]
+                flow_part = flow_mmap[0:max(0, real_end)]
+                
+                rgb_zeros = np.zeros((pad_needed, rgb_mmap.shape[1]), dtype=np.float32)
+                flow_zeros = np.zeros((pad_needed, flow_mmap.shape[1]), dtype=np.float32)
+                
+                rgb_val = np.concatenate((rgb_zeros, rgb_part), axis=0)
+                flow_val = np.concatenate((flow_zeros, flow_part), axis=0)
+            
+            rgb_val = rgb_val[:self.window_size]
+            flow_val = flow_val[:self.window_size]
+        else:
+            rgb_val = rgb_mmap[start:end]
+            flow_val = flow_mmap[start:end]
+
+        rgb_input = torch.tensor(rgb_val.astype(np.float32))
+        flow_input = torch.tensor(flow_val.astype(np.float32))
+        target_tensor = torch.tensor(target.astype(np.float32))
+        
+        return rgb_input.clone(), flow_input.clone(), target_tensor
 
     def __len__(self):
         return len(self.inputs)
