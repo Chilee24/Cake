@@ -221,7 +221,7 @@ class FocalOadLoss(nn.Module):
         super(FocalOadLoss, self).__init__()
         self.reduction = reduction
         self.gamma = cfg.get('focal_gamma', 2.0) # Mặc định gamma = 2.0
-        self.alpha = cfg.get('focal_alpha', 0.25) # Mặc định alpha = 0.25 (cân bằng Positive/Negative)
+        self.alpha = cfg.get('focal_alpha', 0.5) # Mặc định alpha = 0.25 (cân bằng Positive/Negative)
         
         # Nếu muốn alpha riêng cho từng class (ví dụ giảm BG mạnh hơn)
         # cfg['class_weights'] nên là list [1.0, 1.0, ..., 0.1]
@@ -267,7 +267,6 @@ class FocalOadLoss(nn.Module):
             # Để đơn giản, ta nhân trực tiếp nếu user set alpha != 1
             if self.alpha != 1.0:
                  loss = self.alpha * loss
-                 
         # Cách 2: Alpha riêng cho từng class (Advanced)
         else:
             if self.class_weights.device != loss.device:
@@ -276,7 +275,6 @@ class FocalOadLoss(nn.Module):
             
         # 7. Reduction
         if self.reduction == 'mean':
-            # Mean trên cả Batch và Class
             return loss.sum() / logits.shape[0] 
         elif self.reduction == 'sum':
             return loss.sum()

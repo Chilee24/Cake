@@ -19,7 +19,7 @@ FEATURE_SIZES = {
     'flow_kinetics_x3d': 2048
 }
 
-@DATA_LAYERS.register("THUMOS")
+#@DATA_LAYERS.register("THUMOS")
 class ContrastiveOADDataset(data.Dataset):
     
     def __init__(self, cfg, mode='train'):
@@ -55,10 +55,6 @@ class ContrastiveOADDataset(data.Dataset):
         self.rgb_inputs = {}
         self.flow_inputs = {}
         
-        # Feature dim (Nên lấy từ config nếu có thể, ở đây tạm hardcode cho THUMOS)
-        rgb_dim = 2048 
-        flow_dim = 1024
-        
         # [QUAN TRỌNG] Padding để đảm bảo dự đoán được từ frame đầu tiên
         # Padding length = window_size - 1
         pad_len = self.window_size - 1
@@ -68,10 +64,10 @@ class ContrastiveOADDataset(data.Dataset):
         # Nếu Background là class 0, thì one-hot tại 0 phải là 1 (hoặc để 0 hết nếu dùng argmax sau này cũng ra 0)
         # Tuy nhiên để an toàn, ta nên set chuẩn one-hot cho BG nếu cần
         dummy_target[:, self.bg_class_idx] = 1.0 
-        
-        dummy_rgb = np.zeros((pad_len, rgb_dim))
-        dummy_flow = np.zeros((pad_len, flow_dim))
-        
+
+        dummy_rgb = np.zeros((pad_len, FEATURE_SIZES[self.rgb_type]))
+        dummy_flow = np.zeros((pad_len, FEATURE_SIZES[self.flow_type]))
+
         print(f"--> [Dataset] Pre-loading features into RAM ({self.mode})...")
         for vid in self.vids:
             target = np.load(osp.join(self.root_path, self.annotation_type, vid + '.npy'))
@@ -148,10 +144,9 @@ class ContrastiveOADDataset(data.Dataset):
     def __len__(self):
         return len(self.inputs)
 
-#@DATA_LAYERS.register("THUMOS")
+@DATA_LAYERS.register("THUMOS")
 @DATA_LAYERS.register("TVSERIES")
 class THUMOSDataset(data.Dataset):
-    
     def __init__(self, cfg, mode='train'):
         self.root_path = cfg['root_path']
         self.mode = mode
