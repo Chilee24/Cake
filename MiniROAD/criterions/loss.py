@@ -116,91 +116,117 @@ class MultiLabelQueueInfoNCELoss(nn.Module):
         return loss.mean()
 
 @CRITERIONS.register('CONTRASTIVE')
-class SupConMROADLoss(nn.Module):
+class SupConMultiLabelQueueLoss(nn.Module):
     def __init__(self, cfg):
-        super(SupConMROADLoss, self).__init__()
+        super(SupConMultiLabelQueueLoss, self).__init__()
         self.T = cfg.get("temperature", 0.07)
         self.bg_class_idx = cfg.get("bg_class_idx", 0)
+        self.bg_separation_bias = -2.0 # Hệ số phạt Nền (đẩy xa)
 
-    def forward(self, output_dict, labels):
-        q = output_dict['q_cls']          # [B, D] (Anchor)
-        k = output_dict['k_cls']          # [B, D] (Positive)
-        q_shuff = output_dict['q_shuff']  # [B, D] (Negative 1: Temporal Chaos)
-        q_context = output_dict['q_context'] # [B, D] (Negative 2: Context Only)
-        queues = output_dict['queues']    # [C, D, K] (Queue)
+    def forward(self, output_dict, targets_multihot):
+        """
+        Input:
+            output_dict: chứa q_core (hoặc q_cls), k_cls, queues
+            targets_multihot: [B, C] - Vector nhãn gốc (0/1)
+        """
+        # 1. UNPACK
+        # Hỗ trợ lấy key linh hoạt (tùy version model bạn đang dùng)
+        if 'q_cls' in output_dict:
+            q = output_dict['q_cls']
+        else:
+            q = output_dict['q_core'] # Fallback
+            
+        k = output_dict['k_cls']      # [B, D] (Positive Anchor)
+        queues = output_dict['queues'] # [C, D, K]
         
-        batch_size = q.shape[0]
-        num_classes, dim, K = queues.shape
+        B, D = q.shape
+        num_classes, _, K = queues.shape
         device = q.device
 
-        # --- 1. CHUẨN BỊ QUEUE PHẲNG ---
-        queue_flat = queues.permute(0, 2, 1).reshape(-1, dim).T.clone().detach() # [D, N_All]
-        queue_labels = torch.arange(num_classes, device=device).unsqueeze(1).repeat(1, K).view(-1)
-
-        # --- 2. TÍNH LOGITS (MỞ RỘNG 4 PHẦN) ---
+        # 2. FLATTEN QUEUE (Trải phẳng các ngăn tủ)
+        # [C, D, K] -> [D, C*K]
+        queue_flat = queues.permute(0, 2, 1).reshape(-1, D).T.clone().detach()
         
-        # A. Positive (q . k) -> [B, 1]
+        # Tạo ID Bucket cho từng phần tử trong Queue
+        # [0,0...0, 1,1...1, ..., 30,30...30]
+        queue_bucket_ids = torch.arange(num_classes, device=device).unsqueeze(1).repeat(1, K).view(-1)
+
+        # 3. TÍNH LOGITS
+        
+        # A. Positive Teacher (q . k) -> [B, 1]
         l_pos = torch.einsum('nc,nc->n', [q, k]).unsqueeze(-1)
         
-        # B. Hard Negative 1: Shuffle (q . q_shuff) -> [B, 1]
-        l_neg_shuff = torch.einsum('nc,nc->n', [q, q_shuff]).unsqueeze(-1)
-
-        # C. Hard Negative 2: Context Only (q . q_context) -> [B, 1]
-        l_neg_ctx = torch.einsum('nc,nc->n', [q, q_context]).unsqueeze(-1)
-
-        # D. Queue (q . queue) -> [B, N_All]
+        # B. Queue Contrast (q . queue) -> [B, C*K]
         l_queue = torch.mm(q, queue_flat)
         
-        # GỘP LẠI: [Positive, Shuff, Context, Queue...]
-        # Shape: [B, 1 + 1 + 1 + N_All] = [B, 3 + N_All]
-        logits = torch.cat([l_pos, l_neg_shuff, l_neg_ctx, l_queue], dim=1)
+        # GỘP LOGITS: [B, 1 + C*K]
+        logits = torch.cat([l_pos, l_queue], dim=1)
         logits /= self.T
 
-        # --- 3. TẠO MASK POSITIVE (ĐỂ XÁC ĐỊNH TỬ SỐ) ---
-        mask = torch.zeros_like(logits, device=device)
+        # 4. TẠO MASK POSITIVE (Logic Multi-label Cloning)
         
-        # Cột 0 (Key) LUÔN LÀ POSITIVE
-        mask[:, 0] = 1.0 
+        # Mục tiêu: Tạo mask [B, 1 + C*K]
         
-        # Cột 1 (Shuffle) & Cột 2 (Context) LUÔN LÀ NEGATIVE (Mặc định là 0, không cần gán)
-        # mask[:, 1] = 0.0
-        # mask[:, 2] = 0.0
-
-        # Cột 3 trở đi (Queue): Xử lý logic SupCon
-        # Dịch index đi 3 đơn vị
-        is_same_class = labels.unsqueeze(1) == queue_labels.unsqueeze(0) # [B, N_All]
-        mask[:, 3:] = is_same_class.float()
-
-        # Logic Background: Nếu Anchor là BG -> Chỉ kéo k, KHÔNG kéo Queue BG
-        is_bg_sample = (labels == self.bg_class_idx) 
-        mask[is_bg_sample, 3:] = 0.0
-
-        # --- 4. TẠO MASK IGNORE (CHO LỚP NỀN TRÔI NỔI) ---
-        # Mục tiêu: Loại bỏ sự tranh chấp giữa các mẫu Nền trong Queue
+        # A. Cột 0 (Teacher): Luôn là Positive
+        mask_pos_teacher = torch.ones(B, 1, device=device)
         
-        is_bg_in_queue = (queue_labels == self.bg_class_idx) # [N_All]
-        ignore_mask_queue = is_bg_sample.unsqueeze(1) & is_bg_in_queue.unsqueeze(0) # [B, N_All]
+        # B. Cột Queue: Chiếu vector Target lên Bucket IDs
+        # Nếu targets_multihot[b, c] == 1 -> Tất cả bucket c đều là Positive
+        # targets_multihot: [B, C]
+        # queue_bucket_ids: [C*K]
+        # -> mask_queue: [B, C*K]
+        mask_queue_pos = targets_multihot[:, queue_bucket_ids]
+        mask_queue_pos = (mask_queue_pos > 0.5).float() # Đảm bảo binary
+
+        # 5. XỬ LÝ BACKGROUND (Nền)
         
-        # Mở rộng cho 3 cột đầu: 
-        # Cột k (0): Không ignore
-        # Cột Shuff (1): Không ignore (Đẩy mạnh ra)
-        # Cột Ctx (2): Không ignore (Đẩy mạnh ra)
-        ignore_mask = torch.cat([
-            torch.zeros(batch_size, 3, device=device, dtype=torch.bool),
-            ignore_mask_queue
-        ], dim=1)
+        # Xác định Anchor là Nền hay Action
+        is_bg_anchor = targets_multihot[:, self.bg_class_idx].unsqueeze(1).bool() # [B, 1]
+        is_action_anchor = ~is_bg_anchor
+        
+        # Xác định Bucket trong Queue là Nền hay Action
+        is_bg_bucket = (queue_bucket_ids == self.bg_class_idx).unsqueeze(0).bool() # [1, C*K]
+        is_action_bucket = ~is_bg_bucket
 
-        # Gán logits ignore = -inf
-        logits[ignore_mask] = -1e9
+        # LUẬT 1: Anchor BG không kéo ai trong Queue (chỉ kéo Teacher)
+        mask_queue_pos = mask_queue_pos.masked_fill(is_bg_anchor, 0.0)
+        
+        # LUẬT 2: Bias Phạt (Đẩy xa Action và Nền)
+        bias_mask = (is_action_anchor & is_bg_bucket) | (is_bg_anchor & is_action_bucket)
+        # Chỉ cộng bias vào phần Queue của logits
+        logits[:, 1:] = logits[:, 1:] + (bias_mask.float() * self.bg_separation_bias)
 
-        # --- 5. TÍNH LOSS ---
+        # LUẬT 3: Ignore cặp BG-BG
+        mask_ignore_queue = is_bg_anchor & is_bg_bucket
+        
+        # Gộp Mask và Ignore
+        mask_pos_final = torch.cat([mask_pos_teacher, mask_queue_pos], dim=1)
+        
+        mask_ignore_teacher = torch.zeros(B, 1, device=device, dtype=torch.bool)
+        mask_ignore_final = torch.cat([mask_ignore_teacher, mask_ignore_queue], dim=1)
+
+        # 6. TÍNH SUPCON LOSS
+        
         # Ổn định số học
-        log_prob = logits - torch.log(torch.exp(logits).sum(1, keepdim=True))
+        logits_max, _ = torch.max(logits, dim=1, keepdim=True)
+        logits = logits - logits_max.detach()
         
-        # Tính loss trên tập Positive
-        # Tránh chia cho 0 (dù k luôn là positive nên sum >= 1, nhưng an toàn vẫn hơn)
-        mask_sum = mask.sum(1)
-        mean_log_prob_pos = (mask * log_prob).sum(1) / mask_sum
+        # Apply Ignore (Gán -inf để exp về 0)
+        logits = logits.masked_fill(mask_ignore_final, -1e9)
+        exp_logits = torch.exp(logits)
+        
+        # Mẫu số: Tổng exp của tất cả (Positive + Negative)
+        # (Lưu ý: SupCon chuẩn bao gồm cả Positive ở mẫu số)
+        denominator = exp_logits.sum(1, keepdim=True)
+        
+        log_prob = logits - torch.log(denominator + 1e-8)
+        
+        # Loss = - Mean(LogProb của các ô Positive)
+        # Chỉ tính trên các ô Mask = 1
+        mask_sum = mask_pos_final.sum(1)
+        
+        # Tránh chia cho 0 (dù Teacher luôn pos nhưng an toàn vẫn hơn)
+        mean_log_prob_pos = (mask_pos_final * log_prob).sum(1) / (mask_sum + 1e-8)
         
         loss = - mean_log_prob_pos.mean()
         
