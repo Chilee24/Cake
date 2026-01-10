@@ -19,7 +19,7 @@ FEATURE_SIZES = {
     'flow_kinetics_x3d': 2048
 }
 
-#@DATA_LAYERS.register("THUMOS")
+@DATA_LAYERS.register("THUMOS")
 class ContrastiveOADDataset(data.Dataset):
     
     def __init__(self, cfg, mode='train'):
@@ -35,7 +35,8 @@ class ContrastiveOADDataset(data.Dataset):
         
         data_name = cfg['data_name']
         # Load list video
-        self.vids = json.load(open(cfg['video_list_path']))[data_name][mode + '_session_set']
+        with open(cfg['video_list_path'], 'r') as f:
+            self.vids = json.load(f)[data_name][mode + '_session_set']
         
         # 1. LOAD DATA & PADDING
         self._load_features(cfg)
@@ -55,27 +56,28 @@ class ContrastiveOADDataset(data.Dataset):
         self.rgb_inputs = {}
         self.flow_inputs = {}
         
-        # [QUAN TRỌNG] Padding để đảm bảo dự đoán được từ frame đầu tiên
-        # Padding length = window_size - 1
+        # Padding length
         pad_len = self.window_size - 1
         
         # Dummy Target: Toàn bộ là Background
         dummy_target = np.zeros((pad_len, self.num_classes))
-        # Nếu Background là class 0, thì one-hot tại 0 phải là 1 (hoặc để 0 hết nếu dùng argmax sau này cũng ra 0)
-        # Tuy nhiên để an toàn, ta nên set chuẩn one-hot cho BG nếu cần
         dummy_target[:, self.bg_class_idx] = 1.0 
 
-        dummy_rgb = np.zeros((pad_len, FEATURE_SIZES[self.rgb_type]))
-        dummy_flow = np.zeros((pad_len, FEATURE_SIZES[self.flow_type]))
+        # Lấy feature dim từ dict hoặc cfg
+        rgb_dim = FEATURE_SIZES.get(self.rgb_type)
+        flow_dim = FEATURE_SIZES.get(self.flow_type)
+
+        dummy_rgb = np.zeros((pad_len, rgb_dim))
+        dummy_flow = np.zeros((pad_len, flow_dim))
 
         print(f"--> [Dataset] Pre-loading features into RAM ({self.mode})...")
         for vid in self.vids:
+            # Load npy files
             target = np.load(osp.join(self.root_path, self.annotation_type, vid + '.npy'))
             rgb = np.load(osp.join(self.root_path, self.rgb_type, vid + '.npy'))
             flow = np.load(osp.join(self.root_path, self.flow_type, vid + '.npy'))
             
-            # [SỬA ĐỔI] Luôn padding cho cả Train và Test
-            # Để đảm bảo input luôn đủ dài và cover được frame đầu
+            # Padding
             self.target_all[vid] = np.concatenate((dummy_target, target), axis=0)
             self.rgb_inputs[vid] = np.concatenate((dummy_rgb, rgb), axis=0)
             self.flow_inputs[vid] = np.concatenate((dummy_flow, flow), axis=0)
@@ -92,11 +94,10 @@ class ContrastiveOADDataset(data.Dataset):
             seed = np.random.randint(self.stride)
             
             # Sliding Window
-            # start chạy từ seed, đảm bảo end không vượt quá total_frames
             for start in range(seed, total_frames - self.window_size + 1, self.stride):
                 end = start + self.window_size
                 
-                # Label của window là label của frame cuối cùng
+                # Label argmax dùng cho Generator (để tạo mask semantic)
                 last_frame_vec = target[end - 1] 
                 label_idx = np.argmax(last_frame_vec)
                 
@@ -110,13 +111,11 @@ class ContrastiveOADDataset(data.Dataset):
             target = self.target_all[vid]
             total_frames = target.shape[0]
             
-            # Test stride = 1 (Dense evaluation)
+            # Test stride = 1
             for start in range(0, total_frames - self.window_size + 1, 1):
                  end = start + self.window_size
-                 
                  last_frame_vec = target[end - 1]
                  label_idx = np.argmax(last_frame_vec)
-                 
                  self.inputs.append([vid, start, end, label_idx])
 
     def __getitem__(self, index):
@@ -127,25 +126,33 @@ class ContrastiveOADDataset(data.Dataset):
         flow_input = self.flow_inputs[vid][start:end]
         target_window = self.target_all[vid][start:end] 
         
+        # [QUAN TRỌNG] Lấy vector Multi-hot của frame cuối
+        # Model sẽ dùng vector này để biết cần push sample vào những queue nào
+        last_frame_vec = target_window[-1]
+
         # 2. CONVERT TENSOR
         rgb_tensor = torch.tensor(rgb_input.astype(np.float32))
         flow_tensor = torch.tensor(flow_input.astype(np.float32))
+        
+        # targets_multihot: FloatTensor [Num_Classes] (VD: [0, 1, 0, 1...])
+        targets_multihot = torch.tensor(last_frame_vec, dtype=torch.float32)
 
-        # 3. LẤY NHÃN LỊCH SỬ (QUAN TRỌNG CHO LOSS)
+        # 3. LẤY NHÃN LỊCH SỬ
         labels_per_frame = torch.tensor(np.argmax(target_window, axis=1), dtype=torch.long)
 
         return {
             'rgb_anchor': rgb_tensor,
             'flow_anchor': flow_tensor,
             'labels': torch.tensor(label_idx, dtype=torch.long),
+            'targets_multihot': targets_multihot,
             'labels_per_frame': labels_per_frame
         }
 
     def __len__(self):
         return len(self.inputs)
 
-@DATA_LAYERS.register("THUMOS")
-@DATA_LAYERS.register("TVSERIES")
+# @DATA_LAYERS.register("THUMOS")
+# @DATA_LAYERS.register("TVSERIES")
 class THUMOSDataset(data.Dataset):
     def __init__(self, cfg, mode='train'):
         self.root_path = cfg['root_path']

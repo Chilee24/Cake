@@ -29,7 +29,6 @@ def fill_memory_bank(loader, model, device):
     """
     Chạy 1 vòng (không train) để đẩy feature thật vào Memory Queue trước khi train.
     """
-    print(f"--> [Warm-up] Starting to fill Memory Bank (Size per class: {model.K})...")
     model.eval() 
     
     with torch.no_grad():
@@ -37,19 +36,22 @@ def fill_memory_bank(loader, model, device):
         for batch_data in pbar:
             rgb_anchor = batch_data['rgb_anchor'].to(device, non_blocking=True)
             flow_anchor = batch_data['flow_anchor'].to(device, non_blocking=True)
-            labels = batch_data['labels'].to(device, non_blocking=True)
+            labels = batch_data['labels'].to(device, non_blocking=True) # Vẫn giữ cho Generator (dù no-mask identity)
             
-            # [QUAN TRỌNG] Lấy labels_per_frame để Generator hoạt động
+            # [SỬA ĐỔI] Lấy targets_multihot để đẩy vào Queue
+            targets_multihot = batch_data['targets_multihot'].to(device, non_blocking=True)
+            
             labels_per_frame = batch_data.get('labels_per_frame', None)
             if labels_per_frame is not None:
                 labels_per_frame = labels_per_frame.to(device, non_blocking=True)
             
-            # Forward qua model (Teacher sẽ update queue)
-            # Lưu ý: Teacher K tự động update queue bên trong hàm forward hoặc gọi hàm update_queue
+            # Forward
             out_dict = model(rgb_anchor, flow_anchor, labels, labels_per_frame=labels_per_frame)
             
             k_cls = out_dict['k_cls']
-            model.update_queue(k_cls, labels)
+            
+            # [SỬA ĐỔI] Update Queue dùng Multi-hot vector
+            model.update_queue(k_cls, targets_multihot)
                 
     print("--> [Warm-up] Memory Bank filled with real features!")
 
@@ -91,7 +93,6 @@ def main():
 
     # --- 3. MODEL & CRITERION ---
     model = build_model(cfg, device) 
-    # Nếu dùng DataParallel (nhiều GPU)
     if torch.cuda.device_count() > 1:
         print(f"--> Using {torch.cuda.device_count()} GPUs!")
         model = torch.nn.DataParallel(model)
@@ -129,11 +130,9 @@ def main():
         checkpoint = torch.load(args.eval, map_location=device)
         state_dict = checkpoint['model'] if 'model' in checkpoint else checkpoint
         
-        # Xử lý key 'module.' nếu checkpoint cũ train bằng DataParallel
         if hasattr(model, 'module'):
             model.module.load_state_dict(state_dict)
         else:
-             # Nếu model hiện tại không phải DP nhưng checkpoint có module. -> remove
             new_state_dict = {k.replace('module.', ''): v for k,v in state_dict.items()}
             model.load_state_dict(new_state_dict)
         
@@ -154,22 +153,21 @@ def main():
             trainloader, model, criterion, optimizer, scaler, epoch, writer, scheduler=None
         )
         
-        # B. SHUFFLE DATASET (Quan trọng cho Sliding Window ngẫu nhiên)
+        # B. SHUFFLE DATASET
         if hasattr(trainloader.dataset, 'shuffle_indices'):
             trainloader.dataset.shuffle_indices()
         
         # C. VALIDATION
-        # Có thể chỉnh freq để eval thưa hơn nếu muốn (ví dụ: if epoch % 5 == 0:)
         cac_score = evaluate(testloader, model, criterion, epoch, writer)
         
-        # D. SCHEDULER STEP
+        # D. SCHEDULER STEP (Cuối Epoch)
         if scheduler is not None:
             scheduler.step()
         
         # E. SAVE CHECKPOINT
         checkpoint = {
             'epoch': epoch,
-            'model': model.state_dict(), # Sẽ tự handle DataParallel bên trong state_dict()
+            'model': model.state_dict(),
             'optimizer': optimizer.state_dict(),
             'scaler': scaler.state_dict() if scaler else None,
             'best_cac': best_score
@@ -178,10 +176,9 @@ def main():
         # 1. Save Latest
         torch.save(checkpoint, osp.join(result_path, 'latest_model.pth'))
         
-        # 2. Save Epoch (Lưu vào thư mục con ckpts)
+        # 2. Save Epoch
         ckpt_dir = osp.join(result_path, 'ckpts')
         os.makedirs(ckpt_dir, exist_ok=True)
-        # Chỉ lưu mỗi 5 epoch hoặc 10 epoch để tiết kiệm ổ cứng nếu cần
         # if epoch % 5 == 0:
         torch.save(checkpoint, osp.join(ckpt_dir, f'checkpoint_epoch_{epoch}.pth'))
             

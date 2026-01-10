@@ -16,59 +16,6 @@ FEATURE_SIZES = {
     'cake_kinetics': 4096
 }
 
-class SemanticMaskGenerator(nn.Module):
-    def __init__(self, bg_class_idx=0, mask_ratio=0.5):
-        super(SemanticMaskGenerator, self).__init__()
-        self.bg_class_idx = bg_class_idx
-        self.mask_ratio = mask_ratio
-
-    def forward(self, x, labels_per_frame, final_labels):
-        """
-        Output:
-            x_core: 
-                - Action Sample -> Giữ Action, che Nền.
-                - BG Sample -> Giữ Nền, che Action (Pure BG).
-            x_aug: Random Mask (Robustness).
-        """
-        B, T, D = x.shape
-        device = x.device
-
-        # --- 1. TẠO X_AUG (Random Mask - Robustness) ---
-        # Mask ngẫu nhiên T-1 frame đầu, GIỮ FRAME CUỐI
-        rand_tensor = torch.rand(B, T - 1, 1, device=device)
-        mask_aug_past = (rand_tensor > self.mask_ratio).float()
-        mask_aug_last = torch.ones(B, 1, 1, device=device)
-        mask_aug = torch.cat([mask_aug_past, mask_aug_last], dim=1) # [B, T, 1]
-        
-        x_aug = x * mask_aug
-
-        # --- 2. TẠO X_CORE (Semantic Focus) ---
-        
-        # Tạo mask cơ sở
-        is_bg_frame = (labels_per_frame == self.bg_class_idx).unsqueeze(-1).float() # [B, T, 1]
-        
-        mask_action_focus = 1.0 - is_bg_frame # Giữ Action
-        mask_bg_focus = is_bg_frame           # Giữ Nền
-        
-        # Phân loại mẫu (Action hay BG?)
-        is_bg_sample = (final_labels == self.bg_class_idx).view(B, 1, 1) # [B, 1, 1]
-        
-        # LOGIC CHÍNH:
-        # Nếu là BG Sample -> Dùng mask_bg_focus (để tạo Pure BG, loại bỏ action quá khứ)
-        # Nếu là Action Sample -> Dùng mask_action_focus (để tạo Pure Action)
-        mask_core = torch.where(is_bg_sample, mask_bg_focus, mask_action_focus)
-        
-        # --- 3. SAFETY CHECK (Chống đen xì) ---
-        # Nếu mask toàn số 0 (VD: Action sample nhưng toàn nền, hoặc BG sample nhưng toàn action)
-        # -> Fallback về mask_aug để tránh lãng phí
-        has_content = mask_core.sum(dim=1, keepdim=True) > 0 
-        mask_core = torch.where(has_content, mask_core, mask_aug)
-        
-        x_core = x * mask_core
-
-        # Ta BỎ x_context vì không còn dùng nữa
-        return x_core, x_aug
-
 @META_ARCHITECTURES.register("CONTRASTIVE_MROAD")
 class ContrastiveMROADMultiQueue(nn.Module):
     def __init__(self, cfg):
@@ -78,13 +25,7 @@ class ContrastiveMROADMultiQueue(nn.Module):
         self.num_classes = cfg['num_classes']
         self.bg_class_idx = cfg.get('bg_class_idx', 0)
         
-        # Config mask_ratio
-        mr = cfg.get('mask_ratio')
-        self.mask_ratio = mr if mr is not None else 0.5
-        
-        # Generator
-        self.generator = SemanticMaskGenerator(bg_class_idx=self.bg_class_idx, mask_ratio=self.mask_ratio)
-        
+        # Queue Size per Class
         self.K = cfg.get('queue_size_per_class', 1024) 
         self.m = cfg.get('momentum', 0.999)
 
@@ -102,12 +43,10 @@ class ContrastiveMROADMultiQueue(nn.Module):
 
         # Projection Head
         self.head_queue = nn.Sequential(
-            nn.Linear(self.hidden_dim, self.hidden_dim),
-            nn.ReLU(),
             nn.Linear(self.hidden_dim, self.contrastive_dim)
         )
 
-        # Memory Bank
+        # Memory Bank: [Classes, Dim, K]
         self.register_buffer("queues", torch.randn(self.num_classes, self.contrastive_dim, self.K))
         self.queues = F.normalize(self.queues, dim=1) 
         self.register_buffer("queue_ptrs", torch.zeros(self.num_classes, dtype=torch.long))
@@ -118,7 +57,7 @@ class ContrastiveMROADMultiQueue(nn.Module):
         state_dict = checkpoint['state_dict'] if 'state_dict' in checkpoint else checkpoint
         backbone_dict = {}
         for k, v in state_dict.items():
-            if 'f_classification' not in k: 
+            if 'f_classification' not in k and 'fc' not in k: 
                 new_k = k.replace('module.', '')
                 backbone_dict[new_k] = v
         self.encoder_q.load_state_dict(backbone_dict, strict=False)
@@ -129,68 +68,66 @@ class ContrastiveMROADMultiQueue(nn.Module):
             param_k.data = param_k.data * self.m + param_q.data * (1. - self.m)
 
     @torch.no_grad()
-    def _dequeue_and_enqueue(self, keys, labels):
-        unique_labels = torch.unique(labels)
-        for label in unique_labels:
-            mask = (labels == label)
-            keys_subset = keys[mask] 
-            lbl_idx = label.item()
-            ptr = int(self.queue_ptrs[lbl_idx])
-            batch_size_subset = keys_subset.shape[0]
-            if ptr + batch_size_subset <= self.K:
-                self.queues[lbl_idx, :, ptr : ptr + batch_size_subset] = keys_subset.T
-                ptr = (ptr + batch_size_subset) % self.K
+    def _dequeue_and_enqueue(self, keys, targets_multihot):
+        """
+        [MODIFIED] LABEL-WISE CLONING STRATEGY
+        keys: [B, D]
+        targets_multihot: [B, C] - Vector Float (0/1)
+        """
+        # Duyệt qua từng Class (C)
+        for c in range(self.num_classes):
+            # Tìm các mẫu trong batch có chứa label c
+            # targets_multihot[:, c] > 0.5 trả về mask True/False
+            # nonzero() trả về indices của các mẫu đó
+            idxs = torch.nonzero(targets_multihot[:, c] > 0.5).squeeze(1)
+            
+            if idxs.numel() == 0:
+                continue # Không có mẫu nào trong batch thuộc class này
+            
+            # Lấy subset keys thuộc class c
+            keys_subset = keys[idxs] # [N_subset, D]
+            n_subset = keys_subset.shape[0]
+            
+            # Lấy pointer của queue c
+            ptr = int(self.queue_ptrs[c])
+            
+            # Logic Circular Buffer (Update riêng cho queue c)
+            if ptr + n_subset <= self.K:
+                self.queues[c, :, ptr : ptr + n_subset] = keys_subset.T
+                ptr = (ptr + n_subset) % self.K
             else:
                 remaining = self.K - ptr
-                self.queues[lbl_idx, :, ptr:] = keys_subset[:remaining].T
-                overflow = batch_size_subset - remaining
-                self.queues[lbl_idx, :, :overflow] = keys_subset[remaining:].T
+                self.queues[c, :, ptr:] = keys_subset[:remaining].T
+                overflow = n_subset - remaining
+                self.queues[c, :, :overflow] = keys_subset[remaining:].T
                 ptr = overflow
-            self.queue_ptrs[lbl_idx] = ptr
+            
+            # Cập nhật pointer
+            self.queue_ptrs[c] = ptr
 
-    def forward(self, rgb_anchor, flow_anchor, labels, labels_per_frame=None):
+    def forward(self, rgb_anchor, flow_anchor, labels, targets_multihot=None, labels_per_frame=None):
         """
-        Output: q_core, q_aug, k_cls (Đã bỏ q_context)
+        Output: q_core, q_aug, k_cls
         """
-        # Gộp input
-        x_raw = torch.cat((rgb_anchor, flow_anchor), dim=2) 
-        
-        # --- A. GENERATOR STEP ---
-        x_core, x_aug = self.generator(x_raw, labels_per_frame, labels)
-        
-        def split_feat(x_in):
-            rgb_d = rgb_anchor.shape[2]
-            return x_in[:, :, :rgb_d], x_in[:, :, rgb_d:]
+        feat_student = self.encoder_q(rgb_anchor, flow_anchor, return_embedding=True)
+        q_student = F.normalize(self.head_queue(feat_student), dim=1) 
 
-        # --- B. ENCODER STUDENT ---
-        
-        # 1. Nhánh Core (Semantic - Action Focus hoặc BG Pure)
-        r_core, f_core = split_feat(x_core)
-        feat_core = self.encoder_q(r_core, f_core, return_embedding=True)
-        q_core = F.normalize(self.head_queue(feat_core), dim=1) 
-
-        # 2. Nhánh Aug (Robustness - Random Mask)
-        r_aug, f_aug = split_feat(x_aug)
-        feat_aug = self.encoder_q(r_aug, f_aug, return_embedding=True)
-        q_aug = F.normalize(self.head_queue(feat_aug), dim=1)
-
-        # --- C. ENCODER TEACHER ---
+        # C. ENCODER TEACHER
         with torch.no_grad():
             self._momentum_update_key_encoder() 
             feat_k = self.encoder_k(rgb_anchor, flow_anchor, return_embedding=True)
             k_cls = F.normalize(self.head_queue(feat_k), dim=1)
         
-        # --- D. RETURN ---
+        # D. RETURN
         return {
-            'q_core': q_core,      # Positive 1
-            'q_aug': q_aug,        # Positive 2
-            'k_cls': k_cls,        # Teacher Target
-            'queues': self.queues, 
+            'q_cls': q_student,      
+            'k_cls': k_cls,        
+            'queues': self.queues, # [C, D, K]
             'queue_ptrs': self.queue_ptrs
         }
     
-    def update_queue(self, k_cls, labels):
-        self._dequeue_and_enqueue(k_cls, labels)
+    def update_queue(self, k_cls, targets_multihot):
+        self._dequeue_and_enqueue(k_cls, targets_multihot)
 
 @META_ARCHITECTURES.register("MiniROAD")
 class MROAD(nn.Module):
@@ -293,6 +230,7 @@ class MROAD(nn.Module):
             out_dict['logits'] = pred_scores
             
         return out_dict
+    
 @META_ARCHITECTURES.register("MiniROADA")
 class MROADA(nn.Module):
     

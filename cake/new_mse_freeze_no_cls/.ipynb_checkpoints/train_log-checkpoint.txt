@@ -1,0 +1,153 @@
+2025-12-30 07:38:59,481 - INFO - 💾 Config saved to: ./new_mse_freeze_no_cls/config.json
+2025-12-30 07:38:59,481 - INFO - Config: {'train_list': '/workspace/data_nas06/cuongnd36/dashcam/k400/Kinetics-400/kinetics400_train_list_videos.txt', 'train_root': '/workspace/data_nas06/cuongnd36/dashcam/k400/Kinetics-400/videos_train', 'val_list': '/workspace/data_nas06/cuongnd36/dashcam/k400/Kinetics-400/kinetics400_val_list_videos.txt', 'val_root': '/workspace/data_nas06/cuongnd36/dashcam/k400/Kinetics-400/videos_val', 'raft_weights': '/workspace/data_nas06/cuongnd36/dashcam/train_teacher/checkpoint/raft_large_C_T_SKHT_V2-ff5fadd5.pth', 'flow_teacher_weights': '/workspace/data_nas06/cuongnd36/dashcam/checkpoints_x3d_of/best_x3d_flow.pth', 'student_pretrained': '/workspace/data_nas06/cuongnd36/dashcam/train_teacher/checkpoint/X3D_S.pyth', 'resume': None, 'save_dir': './new_mse_freeze_no_cls', 'epochs': 200, 'batch_size': 150, 'clip_len': 13, 'workers': 8, 'lr_backbone': 0.0001, 'lr_new_layers': 0.001, 'stride': 6, 'distill_type': 'mse', 'alpha_distill': 2.0, 'freeze_rgb': True}
+2025-12-30 07:38:59,481 - INFO - >>> Init Models...
+2025-12-30 07:39:00,056 - INFO - 📥 Loading RGB weights: /workspace/data_nas06/cuongnd36/dashcam/train_teacher/checkpoint/X3D_S.pyth
+2025-12-30 07:39:00,126 - INFO - ✅ RGB Backbone & Head Loaded: _IncompatibleKeys(missing_keys=['flow_adapter.0.weight', 'flow_adapter.0.attention.fc.weight', 'flow_adapter.0.attention.bn.weight', 'flow_adapter.0.attention.bn.bias', 'flow_adapter.0.attention.bn.running_mean', 'flow_adapter.0.attention.bn.running_var', 'flow_adapter.0.attention.channel_fc.weight', 'flow_adapter.0.attention.channel_fc.bias', 'flow_adapter.0.attention.spatial_fc.weight', 'flow_adapter.0.attention.spatial_fc.bias', 'flow_adapter.1.weight', 'flow_adapter.1.bias', 'flow_adapter.1.running_mean', 'flow_adapter.1.running_var', 'flow_adapter.3.weight', 'flow_adapter.3.attention.fc.weight', 'flow_adapter.3.attention.bn.weight', 'flow_adapter.3.attention.bn.bias', 'flow_adapter.3.attention.bn.running_mean', 'flow_adapter.3.attention.bn.running_var', 'flow_adapter.3.attention.channel_fc.weight', 'flow_adapter.3.attention.channel_fc.bias', 'flow_adapter.3.attention.filter_fc.weight', 'flow_adapter.3.attention.filter_fc.bias', 'flow_adapter.4.weight', 'flow_adapter.4.bias', 'flow_adapter.4.running_mean', 'flow_adapter.4.running_var', 'hallucinator.time_odconv.weight', 'hallucinator.time_odconv.attention.fc.weight', 'hallucinator.time_odconv.attention.bn.weight', 'hallucinator.time_odconv.attention.bn.bias', 'hallucinator.time_odconv.attention.bn.running_mean', 'hallucinator.time_odconv.attention.bn.running_var', 'hallucinator.time_odconv.attention.channel_fc.weight', 'hallucinator.time_odconv.attention.channel_fc.bias', 'hallucinator.time_odconv.attention.filter_fc.weight', 'hallucinator.time_odconv.attention.filter_fc.bias', 'hallucinator.time_odconv.attention.spatial_fc.weight', 'hallucinator.time_odconv.attention.spatial_fc.bias', 'hallucinator.time_odconv.attention.kernel_fc.weight', 'hallucinator.time_odconv.attention.kernel_fc.bias', 'hallucinator.bn1.weight', 'hallucinator.bn1.bias', 'hallucinator.bn1.running_mean', 'hallucinator.bn1.running_var', 'hallucinator.space_odconv.weight', 'hallucinator.space_odconv.attention.fc.weight', 'hallucinator.space_odconv.attention.bn.weight', 'hallucinator.space_odconv.attention.bn.bias', 'hallucinator.space_odconv.attention.bn.running_mean', 'hallucinator.space_odconv.attention.bn.running_var', 'hallucinator.space_odconv.attention.channel_fc.weight', 'hallucinator.space_odconv.attention.channel_fc.bias', 'hallucinator.space_odconv.attention.filter_fc.weight', 'hallucinator.space_odconv.attention.filter_fc.bias', 'hallucinator.space_odconv.attention.spatial_fc.weight', 'hallucinator.space_odconv.attention.spatial_fc.bias', 'hallucinator.bn2.weight', 'hallucinator.bn2.bias', 'hallucinator.bn2.running_mean', 'hallucinator.bn2.running_var', 'flow_head.pool.pre_conv.weight', 'flow_head.pool.pre_norm.weight', 'flow_head.pool.pre_norm.bias', 'flow_head.pool.pre_norm.running_mean', 'flow_head.pool.pre_norm.running_var', 'flow_head.pool.post_conv.weight', 'flow_head.proj.weight', 'flow_head.proj.bias'], unexpected_keys=[])
+2025-12-30 07:39:00,126 - INFO - 📥 Loading FLOW Head from Teacher: /workspace/data_nas06/cuongnd36/dashcam/checkpoints_x3d_of/best_x3d_flow.pth
+2025-12-30 07:39:00,161 - INFO - ✅ Flow Head Loaded (45 params)! Student đã kế thừa tri thức phân loại của Teacher.
+2025-12-30 07:39:00,163 - INFO - ❄️ FREEZING RGB BACKBONE & HEAD (Only Training Flow Branch) ❄️
+2025-12-30 07:39:00,164 - INFO - --- Khởi tạo Teacher Pipeline trên cuda ---
+2025-12-30 07:39:00,302 - INFO - ✅ RAFT Loaded: /workspace/data_nas06/cuongnd36/dashcam/train_teacher/checkpoint/raft_large_C_T_SKHT_V2-ff5fadd5.pth
+2025-12-30 07:39:00,496 - INFO - ✅ X3D-Flow Teacher Loaded: /workspace/data_nas06/cuongnd36/dashcam/checkpoints_x3d_of/best_x3d_flow.pth
+2025-12-30 07:39:00,500 - INFO - 👉 Using MSE Loss with alpha=2.0
+2025-12-30 07:39:00,503 - INFO - >>> Creating Loaders...
+2025-12-30 07:39:00,697 - INFO - >>> START TRAINING (Method: MSE)...
+2025-12-30 07:39:00,701 - INFO - ❄️ FREEZING RGB BACKBONE & HEAD (Chế độ tập trung học Flow) ❄️
+2025-12-30 10:23:49,123 - INFO - Ep 1: RGB_Acc=0.00% | Flow_Acc=38.49% | Cos=0.670
+2025-12-30 10:37:46,707 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 36.96% | Distill 8.7941
+2025-12-30 10:37:47,318 - INFO - ❄️ FREEZING RGB BACKBONE & HEAD (Chế độ tập trung học Flow) ❄️
+2025-12-30 13:22:13,847 - INFO - Ep 2: RGB_Acc=0.00% | Flow_Acc=43.26% | Cos=0.813
+2025-12-30 13:35:58,257 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 36.37% | Distill 6.3273
+2025-12-30 13:35:58,764 - INFO - ❄️ FREEZING RGB BACKBONE & HEAD (Chế độ tập trung học Flow) ❄️
+2025-12-30 16:19:47,407 - INFO - Ep 3: RGB_Acc=0.00% | Flow_Acc=43.02% | Cos=0.839
+2025-12-30 16:33:37,430 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 37.17% | Distill 5.6675
+2025-12-30 16:33:37,761 - INFO - ❄️ FREEZING RGB BACKBONE & HEAD (Chế độ tập trung học Flow) ❄️
+2025-12-30 19:17:59,965 - INFO - Ep 4: RGB_Acc=0.00% | Flow_Acc=43.39% | Cos=0.847
+2025-12-30 19:31:43,430 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 36.84% | Distill 5.5078
+2025-12-30 19:31:43,772 - INFO - ❄️ FREEZING RGB BACKBONE & HEAD (Chế độ tập trung học Flow) ❄️
+2025-12-30 22:14:58,715 - INFO - Ep 5: RGB_Acc=0.00% | Flow_Acc=43.66% | Cos=0.850
+2025-12-30 22:28:43,973 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 36.56% | Distill 5.4730
+2025-12-30 22:28:44,575 - INFO - ❄️ FREEZING RGB BACKBONE & HEAD (Chế độ tập trung học Flow) ❄️
+2025-12-31 01:11:26,824 - INFO - Ep 6: RGB_Acc=0.00% | Flow_Acc=44.01% | Cos=0.851
+2025-12-31 01:25:09,768 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 38.11% | Distill 5.4500
+2025-12-31 01:25:10,079 - INFO - ❄️ FREEZING RGB BACKBONE & HEAD (Chế độ tập trung học Flow) ❄️
+2025-12-31 04:08:02,606 - INFO - Ep 7: RGB_Acc=0.00% | Flow_Acc=44.26% | Cos=0.851
+2025-12-31 04:21:48,505 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 37.67% | Distill 5.4468
+2025-12-31 04:21:48,854 - INFO - ❄️ FREEZING RGB BACKBONE & HEAD (Chế độ tập trung học Flow) ❄️
+2025-12-31 07:04:35,032 - INFO - Ep 8: RGB_Acc=0.00% | Flow_Acc=44.54% | Cos=0.851
+2025-12-31 07:18:19,525 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 37.50% | Distill 5.4381
+2025-12-31 07:18:19,829 - INFO - ❄️ FREEZING RGB BACKBONE & HEAD (Chế độ tập trung học Flow) ❄️
+2025-12-31 10:01:08,077 - INFO - Ep 9: RGB_Acc=0.00% | Flow_Acc=44.59% | Cos=0.852
+2025-12-31 10:14:53,375 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 38.08% | Distill 5.4363
+2025-12-31 10:14:53,702 - INFO - ❄️ FREEZING RGB BACKBONE & HEAD (Chế độ tập trung học Flow) ❄️
+2025-12-31 12:57:44,812 - INFO - Ep 10: RGB_Acc=0.00% | Flow_Acc=44.86% | Cos=0.852
+2025-12-31 13:11:32,350 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 38.81% | Distill 5.4277
+2025-12-31 13:11:32,958 - INFO - ❄️ FREEZING RGB BACKBONE & HEAD (Chế độ tập trung học Flow) ❄️
+2025-12-31 15:54:20,669 - INFO - Ep 11: RGB_Acc=0.00% | Flow_Acc=45.01% | Cos=0.852
+2025-12-31 16:08:06,922 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 37.40% | Distill 5.4208
+2025-12-31 16:08:07,231 - INFO - ❄️ FREEZING RGB BACKBONE & HEAD (Chế độ tập trung học Flow) ❄️
+2025-12-31 18:50:49,560 - INFO - Ep 12: RGB_Acc=0.00% | Flow_Acc=45.03% | Cos=0.852
+2025-12-31 19:04:37,239 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 39.48% | Distill 5.4218
+2025-12-31 19:04:37,560 - INFO - ❄️ FREEZING RGB BACKBONE & HEAD (Chế độ tập trung học Flow) ❄️
+2025-12-31 21:47:25,894 - INFO - Ep 13: RGB_Acc=0.00% | Flow_Acc=45.03% | Cos=0.852
+2025-12-31 22:01:11,266 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 39.17% | Distill 5.4178
+2025-12-31 22:01:11,590 - INFO - ❄️ FREEZING RGB BACKBONE & HEAD (Chế độ tập trung học Flow) ❄️
+2026-01-01 00:44:10,387 - INFO - Ep 14: RGB_Acc=0.00% | Flow_Acc=45.03% | Cos=0.852
+2026-01-01 00:57:58,952 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 39.03% | Distill 5.4174
+2026-01-01 00:57:59,270 - INFO - ❄️ FREEZING RGB BACKBONE & HEAD (Chế độ tập trung học Flow) ❄️
+2026-01-01 03:41:56,800 - INFO - Ep 15: RGB_Acc=0.00% | Flow_Acc=45.21% | Cos=0.852
+2026-01-01 03:55:46,098 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 38.37% | Distill 5.4114
+2026-01-01 03:55:46,721 - INFO - ❄️ FREEZING RGB BACKBONE & HEAD (Chế độ tập trung học Flow) ❄️
+2026-01-01 06:39:54,242 - INFO - Ep 16: RGB_Acc=0.00% | Flow_Acc=45.08% | Cos=0.852
+2026-01-01 06:53:48,541 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 38.67% | Distill 5.4089
+2026-01-01 06:53:48,874 - INFO - ❄️ FREEZING RGB BACKBONE & HEAD (Chế độ tập trung học Flow) ❄️
+2026-01-01 09:37:47,904 - INFO - Ep 17: RGB_Acc=0.00% | Flow_Acc=45.17% | Cos=0.852
+2026-01-01 09:51:38,932 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 39.21% | Distill 5.4071
+2026-01-01 09:51:39,251 - INFO - ❄️ FREEZING RGB BACKBONE & HEAD (Chế độ tập trung học Flow) ❄️
+2026-01-01 12:35:33,599 - INFO - Ep 18: RGB_Acc=0.00% | Flow_Acc=45.26% | Cos=0.852
+2026-01-01 12:49:27,022 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 38.50% | Distill 5.4068
+2026-01-01 12:49:27,321 - INFO - ❄️ FREEZING RGB BACKBONE & HEAD (Chế độ tập trung học Flow) ❄️
+2026-01-01 15:33:27,060 - INFO - Ep 19: RGB_Acc=0.00% | Flow_Acc=45.20% | Cos=0.852
+2026-01-01 15:47:15,902 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 38.26% | Distill 5.4116
+2026-01-01 15:47:16,213 - INFO - ❄️ FREEZING RGB BACKBONE & HEAD (Chế độ tập trung học Flow) ❄️
+2026-01-01 18:31:31,133 - INFO - Ep 20: RGB_Acc=0.00% | Flow_Acc=45.34% | Cos=0.852
+2026-01-01 18:45:21,699 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 38.62% | Distill 5.4031
+2026-01-01 18:45:22,282 - INFO - ❄️ FREEZING RGB BACKBONE & HEAD (Chế độ tập trung học Flow) ❄️
+2026-01-01 21:29:19,358 - INFO - Ep 21: RGB_Acc=0.00% | Flow_Acc=45.41% | Cos=0.852
+2026-01-01 21:43:10,105 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 38.58% | Distill 5.4053
+2026-01-01 21:43:10,440 - INFO - ❄️ FREEZING RGB BACKBONE & HEAD (Chế độ tập trung học Flow) ❄️
+2026-01-02 00:27:13,044 - INFO - Ep 22: RGB_Acc=0.00% | Flow_Acc=45.32% | Cos=0.852
+2026-01-02 00:41:06,590 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 39.56% | Distill 5.3975
+2026-01-02 00:41:06,914 - INFO - ❄️ FREEZING RGB BACKBONE & HEAD (Chế độ tập trung học Flow) ❄️
+2026-01-02 03:25:19,094 - INFO - Ep 23: RGB_Acc=0.00% | Flow_Acc=45.48% | Cos=0.852
+2026-01-02 03:39:07,820 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 39.00% | Distill 5.3934
+2026-01-02 03:39:08,141 - INFO - ❄️ FREEZING RGB BACKBONE & HEAD (Chế độ tập trung học Flow) ❄️
+2026-01-02 06:23:19,251 - INFO - Ep 24: RGB_Acc=0.00% | Flow_Acc=45.39% | Cos=0.853
+2026-01-02 06:37:06,632 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 38.67% | Distill 5.3968
+2026-01-02 06:37:06,962 - INFO - ❄️ FREEZING RGB BACKBONE & HEAD (Chế độ tập trung học Flow) ❄️
+2026-01-02 09:21:06,329 - INFO - Ep 25: RGB_Acc=0.00% | Flow_Acc=45.50% | Cos=0.853
+2026-01-02 09:34:54,555 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 39.02% | Distill 5.3950
+2026-01-02 09:34:55,165 - INFO - ❄️ FREEZING RGB BACKBONE & HEAD (Chế độ tập trung học Flow) ❄️
+2026-01-02 12:19:12,345 - INFO - Ep 26: RGB_Acc=0.00% | Flow_Acc=45.44% | Cos=0.853
+2026-01-02 12:33:00,181 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 38.89% | Distill 5.3971
+2026-01-02 12:33:00,508 - INFO - ❄️ FREEZING RGB BACKBONE & HEAD (Chế độ tập trung học Flow) ❄️
+2026-01-02 15:17:21,027 - INFO - Ep 27: RGB_Acc=0.00% | Flow_Acc=45.47% | Cos=0.853
+2026-01-02 15:31:15,175 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 39.22% | Distill 5.3955
+2026-01-02 15:31:15,472 - INFO - ❄️ FREEZING RGB BACKBONE & HEAD (Chế độ tập trung học Flow) ❄️
+2026-01-02 18:15:23,595 - INFO - Ep 28: RGB_Acc=0.00% | Flow_Acc=45.49% | Cos=0.853
+2026-01-02 18:29:14,433 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 38.30% | Distill 5.3947
+2026-01-02 18:29:14,772 - INFO - ❄️ FREEZING RGB BACKBONE & HEAD (Chế độ tập trung học Flow) ❄️
+2026-01-02 21:13:18,236 - INFO - Ep 29: RGB_Acc=0.00% | Flow_Acc=45.44% | Cos=0.853
+2026-01-02 21:27:08,707 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 38.49% | Distill 5.3955
+2026-01-02 21:27:09,053 - INFO - ❄️ FREEZING RGB BACKBONE & HEAD (Chế độ tập trung học Flow) ❄️
+2026-01-03 00:11:20,766 - INFO - Ep 30: RGB_Acc=0.00% | Flow_Acc=45.52% | Cos=0.853
+2026-01-03 00:25:12,915 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 39.41% | Distill 5.3921
+2026-01-03 00:25:13,503 - INFO - ❄️ FREEZING RGB BACKBONE & HEAD (Chế độ tập trung học Flow) ❄️
+2026-01-03 03:09:24,056 - INFO - Ep 31: RGB_Acc=0.00% | Flow_Acc=45.63% | Cos=0.853
+2026-01-03 03:23:18,838 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 38.46% | Distill 5.3891
+2026-01-03 03:23:19,139 - INFO - ❄️ FREEZING RGB BACKBONE & HEAD (Chế độ tập trung học Flow) ❄️
+2026-01-03 06:07:23,097 - INFO - Ep 32: RGB_Acc=0.00% | Flow_Acc=45.43% | Cos=0.853
+2026-01-03 06:21:16,099 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 39.73% | Distill 5.3885
+2026-01-03 06:21:16,447 - INFO - ❄️ FREEZING RGB BACKBONE & HEAD (Chế độ tập trung học Flow) ❄️
+2026-01-03 09:05:19,624 - INFO - Ep 33: RGB_Acc=0.00% | Flow_Acc=45.60% | Cos=0.853
+2026-01-03 09:19:13,849 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 39.17% | Distill 5.3881
+2026-01-03 09:19:14,183 - INFO - ❄️ FREEZING RGB BACKBONE & HEAD (Chế độ tập trung học Flow) ❄️
+2026-01-03 12:03:30,554 - INFO - Ep 34: RGB_Acc=0.00% | Flow_Acc=45.66% | Cos=0.853
+2026-01-03 12:17:23,525 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 39.16% | Distill 5.3852
+2026-01-03 12:17:23,831 - INFO - ❄️ FREEZING RGB BACKBONE & HEAD (Chế độ tập trung học Flow) ❄️
+2026-01-03 15:01:44,328 - INFO - Ep 35: RGB_Acc=0.00% | Flow_Acc=45.54% | Cos=0.853
+2026-01-03 15:15:32,887 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 39.56% | Distill 5.3853
+2026-01-03 15:15:33,465 - INFO - ❄️ FREEZING RGB BACKBONE & HEAD (Chế độ tập trung học Flow) ❄️
+2026-01-03 17:59:40,664 - INFO - Ep 36: RGB_Acc=0.00% | Flow_Acc=45.61% | Cos=0.853
+2026-01-03 18:13:33,281 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 39.56% | Distill 5.3863
+2026-01-03 18:13:33,590 - INFO - ❄️ FREEZING RGB BACKBONE & HEAD (Chế độ tập trung học Flow) ❄️
+2026-01-03 20:57:25,349 - INFO - Ep 37: RGB_Acc=0.00% | Flow_Acc=45.64% | Cos=0.853
+2026-01-03 21:11:17,951 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 39.39% | Distill 5.3841
+2026-01-03 21:11:18,264 - INFO - ❄️ FREEZING RGB BACKBONE & HEAD (Chế độ tập trung học Flow) ❄️
+2026-01-03 23:55:12,279 - INFO - Ep 38: RGB_Acc=0.00% | Flow_Acc=45.54% | Cos=0.853
+2026-01-04 00:09:02,195 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 39.74% | Distill 5.3822
+2026-01-04 00:09:02,512 - INFO - ❄️ FREEZING RGB BACKBONE & HEAD (Chế độ tập trung học Flow) ❄️
+2026-01-04 02:53:05,468 - INFO - Ep 39: RGB_Acc=0.00% | Flow_Acc=45.49% | Cos=0.853
+2026-01-04 03:06:54,034 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 39.53% | Distill 5.3814
+2026-01-04 03:06:54,336 - INFO - ❄️ FREEZING RGB BACKBONE & HEAD (Chế độ tập trung học Flow) ❄️
+2026-01-04 05:51:17,161 - INFO - Ep 40: RGB_Acc=0.00% | Flow_Acc=45.69% | Cos=0.853
+2026-01-04 06:05:09,933 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 39.65% | Distill 5.3796
+2026-01-04 06:05:10,652 - INFO - ❄️ FREEZING RGB BACKBONE & HEAD (Chế độ tập trung học Flow) ❄️
+2026-01-04 08:49:16,937 - INFO - Ep 41: RGB_Acc=0.00% | Flow_Acc=45.61% | Cos=0.853
+2026-01-04 09:03:06,985 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 39.47% | Distill 5.3792
+2026-01-04 09:03:07,274 - INFO - ❄️ FREEZING RGB BACKBONE & HEAD (Chế độ tập trung học Flow) ❄️
+2026-01-04 11:47:18,989 - INFO - Ep 42: RGB_Acc=0.00% | Flow_Acc=45.70% | Cos=0.853
+2026-01-04 12:01:07,316 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 39.29% | Distill 5.3861
+2026-01-04 12:01:07,641 - INFO - ❄️ FREEZING RGB BACKBONE & HEAD (Chế độ tập trung học Flow) ❄️
+2026-01-04 14:45:07,731 - INFO - Ep 43: RGB_Acc=0.00% | Flow_Acc=45.64% | Cos=0.853
+2026-01-04 14:58:58,964 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 39.50% | Distill 5.3825
+2026-01-04 14:58:59,292 - INFO - ❄️ FREEZING RGB BACKBONE & HEAD (Chế độ tập trung học Flow) ❄️
+2026-01-04 17:43:01,600 - INFO - Ep 44: RGB_Acc=0.00% | Flow_Acc=45.73% | Cos=0.853
+2026-01-04 17:56:52,322 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 39.97% | Distill 5.3799
+2026-01-04 17:56:52,619 - INFO - ❄️ FREEZING RGB BACKBONE & HEAD (Chế độ tập trung học Flow) ❄️
+2026-01-04 20:40:53,052 - INFO - Ep 45: RGB_Acc=0.00% | Flow_Acc=45.78% | Cos=0.853
+2026-01-04 20:54:43,468 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 39.96% | Distill 5.3793
+2026-01-04 20:54:44,069 - INFO - ❄️ FREEZING RGB BACKBONE & HEAD (Chế độ tập trung học Flow) ❄️
+2026-01-04 23:38:38,943 - INFO - Ep 46: RGB_Acc=0.00% | Flow_Acc=45.75% | Cos=0.853
+2026-01-04 23:52:31,548 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 39.82% | Distill 5.3802
+2026-01-04 23:52:31,864 - INFO - ❄️ FREEZING RGB BACKBONE & HEAD (Chế độ tập trung học Flow) ❄️

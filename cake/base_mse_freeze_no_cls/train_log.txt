@@ -1,0 +1,172 @@
+2025-12-30 07:38:06,258 - INFO - 💾 Config saved to: ./base_mse_freeze_no_cls/config.json
+2025-12-30 07:38:06,258 - INFO - Config: {'train_list': '/workspace/data_nas06/cuongnd36/dashcam/k400/Kinetics-400/kinetics400_train_list_videos.txt', 'train_root': '/workspace/data_nas06/cuongnd36/dashcam/k400/Kinetics-400/videos_train', 'val_list': '/workspace/data_nas06/cuongnd36/dashcam/k400/Kinetics-400/kinetics400_val_list_videos.txt', 'val_root': '/workspace/data_nas06/cuongnd36/dashcam/k400/Kinetics-400/videos_val', 'raft_weights': '/workspace/data_nas06/cuongnd36/dashcam/train_teacher/checkpoint/raft_large_C_T_SKHT_V2-ff5fadd5.pth', 'flow_teacher_weights': '/workspace/data_nas06/cuongnd36/dashcam/checkpoints_x3d_of/best_x3d_flow.pth', 'student_pretrained': '/workspace/data_nas06/cuongnd36/dashcam/train_teacher/checkpoint/X3D_S.pyth', 'resume': None, 'save_dir': './base_mse_freeze_no_cls', 'epochs': 200, 'batch_size': 150, 'clip_len': 13, 'workers': 8, 'lr_backbone': 0.0001, 'lr_new_layers': 0.001, 'stride': 6, 'distill_type': 'mse', 'alpha_distill': 2.0, 'freeze_rgb': True}
+2025-12-30 07:38:06,258 - INFO - >>> Init Models (BASELINE: STANDARD CONV)...
+2025-12-30 07:38:06,887 - INFO - 📥 Loading RGB weights: /workspace/data_nas06/cuongnd36/dashcam/train_teacher/checkpoint/X3D_S.pyth
+2025-12-30 07:38:06,954 - INFO - ✅ RGB Backbone & Head Loaded: _IncompatibleKeys(missing_keys=['flow_adapter.0.weight', 'flow_adapter.1.weight', 'flow_adapter.1.bias', 'flow_adapter.1.running_mean', 'flow_adapter.1.running_var', 'flow_adapter.3.weight', 'flow_adapter.4.weight', 'flow_adapter.4.bias', 'flow_adapter.4.running_mean', 'flow_adapter.4.running_var', 'hallucinator.space_conv.weight', 'hallucinator.bn1.weight', 'hallucinator.bn1.bias', 'hallucinator.bn1.running_mean', 'hallucinator.bn1.running_var', 'hallucinator.time_conv.weight', 'hallucinator.bn2.weight', 'hallucinator.bn2.bias', 'hallucinator.bn2.running_mean', 'hallucinator.bn2.running_var', 'flow_head.pool.pre_conv.weight', 'flow_head.pool.pre_norm.weight', 'flow_head.pool.pre_norm.bias', 'flow_head.pool.pre_norm.running_mean', 'flow_head.pool.pre_norm.running_var', 'flow_head.pool.post_conv.weight', 'flow_head.proj.weight', 'flow_head.proj.bias'], unexpected_keys=[])
+2025-12-30 07:38:06,955 - INFO - 📥 Loading FLOW Head from Teacher: /workspace/data_nas06/cuongnd36/dashcam/checkpoints_x3d_of/best_x3d_flow.pth
+2025-12-30 07:38:06,990 - INFO - ✅ Flow Head Loaded (45 params)!
+2025-12-30 07:38:06,991 - INFO - ❄️ FREEZING RGB BACKBONE & HEAD (Only Training Flow Branch) ❄️
+2025-12-30 07:38:06,993 - INFO - --- Khởi tạo Teacher Pipeline trên cuda ---
+2025-12-30 07:38:07,105 - INFO - ✅ RAFT Loaded: /workspace/data_nas06/cuongnd36/dashcam/train_teacher/checkpoint/raft_large_C_T_SKHT_V2-ff5fadd5.pth
+2025-12-30 07:38:07,282 - INFO - ✅ X3D-Flow Teacher Loaded: /workspace/data_nas06/cuongnd36/dashcam/checkpoints_x3d_of/best_x3d_flow.pth
+2025-12-30 07:38:07,286 - INFO - 👉 Using MSE Loss with alpha=2.0
+2025-12-30 07:38:07,288 - INFO - >>> Creating Loaders...
+2025-12-30 07:38:07,472 - INFO - >>> START TRAINING (Method: MSE)...
+2025-12-30 10:22:00,306 - INFO - Ep 1: RGB_Acc=0.00% | Flow_Acc=42.41% | Cos=0.671
+2025-12-30 10:35:55,026 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 39.15% | Distill 8.8262
+2025-12-30 13:20:33,641 - INFO - Ep 2: RGB_Acc=0.00% | Flow_Acc=43.66% | Cos=0.812
+2025-12-30 13:34:16,536 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 36.56% | Distill 6.4106
+2025-12-30 16:18:02,037 - INFO - Ep 3: RGB_Acc=0.00% | Flow_Acc=42.36% | Cos=0.836
+2025-12-30 16:31:46,751 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 37.39% | Distill 5.7110
+2025-12-30 19:17:31,958 - INFO - Ep 4: RGB_Acc=0.00% | Flow_Acc=44.17% | Cos=0.846
+2025-12-30 19:31:19,043 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 37.56% | Distill 5.5557
+2025-12-30 22:14:10,275 - INFO - Ep 5: RGB_Acc=0.00% | Flow_Acc=44.14% | Cos=0.848
+2025-12-30 22:27:56,792 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 37.44% | Distill 5.5289
+2025-12-31 01:10:12,990 - INFO - Ep 6: RGB_Acc=0.00% | Flow_Acc=44.38% | Cos=0.849
+2025-12-31 01:23:58,244 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 37.33% | Distill 5.5151
+2025-12-31 04:06:09,852 - INFO - Ep 7: RGB_Acc=0.00% | Flow_Acc=44.48% | Cos=0.849
+2025-12-31 04:19:56,867 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 38.00% | Distill 5.5078
+2025-12-31 07:02:00,158 - INFO - Ep 8: RGB_Acc=0.00% | Flow_Acc=44.66% | Cos=0.849
+2025-12-31 07:15:44,162 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 38.14% | Distill 5.4986
+2025-12-31 09:57:54,832 - INFO - Ep 9: RGB_Acc=0.00% | Flow_Acc=44.76% | Cos=0.849
+2025-12-31 10:11:37,882 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 37.88% | Distill 5.4924
+2025-12-31 12:53:51,068 - INFO - Ep 10: RGB_Acc=0.00% | Flow_Acc=44.73% | Cos=0.850
+2025-12-31 13:07:38,437 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 37.93% | Distill 5.4875
+2025-12-31 15:49:48,391 - INFO - Ep 11: RGB_Acc=0.00% | Flow_Acc=44.98% | Cos=0.850
+2025-12-31 16:03:34,562 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 37.80% | Distill 5.4845
+2025-12-31 18:45:40,401 - INFO - Ep 12: RGB_Acc=0.00% | Flow_Acc=44.92% | Cos=0.850
+2025-12-31 18:59:20,940 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 38.66% | Distill 5.4831
+2025-12-31 21:41:33,967 - INFO - Ep 13: RGB_Acc=0.00% | Flow_Acc=45.08% | Cos=0.850
+2025-12-31 21:55:15,976 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 38.10% | Distill 5.4801
+2026-01-01 00:37:28,632 - INFO - Ep 14: RGB_Acc=0.00% | Flow_Acc=44.96% | Cos=0.850
+2026-01-01 00:51:15,806 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 37.95% | Distill 5.4780
+2026-01-01 03:34:31,252 - INFO - Ep 15: RGB_Acc=0.00% | Flow_Acc=44.94% | Cos=0.850
+2026-01-01 03:48:21,345 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 38.26% | Distill 5.4756
+2026-01-01 06:31:48,375 - INFO - Ep 16: RGB_Acc=0.00% | Flow_Acc=45.04% | Cos=0.850
+2026-01-01 06:45:52,069 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 38.48% | Distill 5.4751
+2026-01-01 09:29:07,540 - INFO - Ep 17: RGB_Acc=0.00% | Flow_Acc=44.96% | Cos=0.850
+2026-01-01 09:42:59,540 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 38.20% | Distill 5.4745
+2026-01-01 12:26:14,003 - INFO - Ep 18: RGB_Acc=0.00% | Flow_Acc=45.07% | Cos=0.850
+2026-01-01 12:40:07,582 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 38.52% | Distill 5.4709
+2026-01-01 15:23:36,920 - INFO - Ep 19: RGB_Acc=0.00% | Flow_Acc=45.05% | Cos=0.850
+2026-01-01 15:37:28,218 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 38.54% | Distill 5.4718
+2026-01-01 18:21:08,733 - INFO - Ep 20: RGB_Acc=0.00% | Flow_Acc=45.13% | Cos=0.850
+2026-01-01 18:35:03,963 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 37.92% | Distill 5.4731
+2026-01-01 21:18:31,941 - INFO - Ep 21: RGB_Acc=0.00% | Flow_Acc=45.10% | Cos=0.850
+2026-01-01 21:32:28,288 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 38.57% | Distill 5.4703
+2026-01-02 00:16:02,084 - INFO - Ep 22: RGB_Acc=0.00% | Flow_Acc=45.16% | Cos=0.850
+2026-01-02 00:29:58,641 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 38.19% | Distill 5.4677
+2026-01-02 03:13:37,170 - INFO - Ep 23: RGB_Acc=0.00% | Flow_Acc=45.17% | Cos=0.850
+2026-01-02 03:27:32,204 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 38.83% | Distill 5.4672
+2026-01-02 06:11:09,797 - INFO - Ep 24: RGB_Acc=0.00% | Flow_Acc=45.16% | Cos=0.850
+2026-01-02 06:25:02,022 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 38.57% | Distill 5.4663
+2026-01-02 09:08:29,639 - INFO - Ep 25: RGB_Acc=0.00% | Flow_Acc=45.19% | Cos=0.850
+2026-01-02 09:22:26,510 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 38.44% | Distill 5.4658
+2026-01-02 12:06:04,906 - INFO - Ep 26: RGB_Acc=0.00% | Flow_Acc=45.15% | Cos=0.850
+2026-01-02 12:19:57,437 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 38.38% | Distill 5.4648
+2026-01-02 15:03:45,381 - INFO - Ep 27: RGB_Acc=0.00% | Flow_Acc=45.20% | Cos=0.850
+2026-01-02 15:17:40,840 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 38.40% | Distill 5.4662
+2026-01-02 18:01:21,813 - INFO - Ep 28: RGB_Acc=0.00% | Flow_Acc=45.30% | Cos=0.850
+2026-01-02 18:15:17,443 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 38.61% | Distill 5.4636
+2026-01-02 20:58:52,976 - INFO - Ep 29: RGB_Acc=0.00% | Flow_Acc=45.20% | Cos=0.850
+2026-01-02 21:12:43,853 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 38.78% | Distill 5.4651
+2026-01-02 23:56:20,183 - INFO - Ep 30: RGB_Acc=0.00% | Flow_Acc=45.25% | Cos=0.850
+2026-01-03 00:10:14,969 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 38.97% | Distill 5.4629
+2026-01-03 02:53:55,390 - INFO - Ep 31: RGB_Acc=0.00% | Flow_Acc=45.24% | Cos=0.850
+2026-01-03 03:07:53,320 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 38.56% | Distill 5.4602
+2026-01-03 05:51:36,533 - INFO - Ep 32: RGB_Acc=0.00% | Flow_Acc=45.26% | Cos=0.850
+2026-01-03 06:05:29,380 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 38.50% | Distill 5.4610
+2026-01-03 08:49:04,141 - INFO - Ep 33: RGB_Acc=0.00% | Flow_Acc=45.24% | Cos=0.850
+2026-01-03 09:03:01,809 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 38.33% | Distill 5.4612
+2026-01-03 11:46:44,067 - INFO - Ep 34: RGB_Acc=0.00% | Flow_Acc=45.37% | Cos=0.850
+2026-01-03 12:00:38,822 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 38.80% | Distill 5.4606
+2026-01-03 14:44:30,848 - INFO - Ep 35: RGB_Acc=0.00% | Flow_Acc=45.29% | Cos=0.850
+2026-01-03 14:58:29,241 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 39.00% | Distill 5.4602
+2026-01-03 17:42:07,871 - INFO - Ep 36: RGB_Acc=0.00% | Flow_Acc=45.28% | Cos=0.850
+2026-01-03 17:56:05,349 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 38.69% | Distill 5.4596
+2026-01-03 20:39:30,840 - INFO - Ep 37: RGB_Acc=0.00% | Flow_Acc=45.39% | Cos=0.850
+2026-01-03 20:53:25,621 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 39.07% | Distill 5.4603
+2026-01-03 23:36:48,303 - INFO - Ep 38: RGB_Acc=0.00% | Flow_Acc=45.29% | Cos=0.850
+2026-01-03 23:50:47,346 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 38.62% | Distill 5.4602
+2026-01-04 02:34:10,449 - INFO - Ep 39: RGB_Acc=0.00% | Flow_Acc=45.37% | Cos=0.850
+2026-01-04 02:48:06,198 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 38.72% | Distill 5.4587
+2026-01-04 05:31:47,121 - INFO - Ep 40: RGB_Acc=0.00% | Flow_Acc=45.34% | Cos=0.850
+2026-01-04 05:45:43,096 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 38.69% | Distill 5.4573
+2026-01-04 08:29:15,711 - INFO - Ep 41: RGB_Acc=0.00% | Flow_Acc=45.30% | Cos=0.850
+2026-01-04 08:43:11,625 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 38.44% | Distill 5.4582
+2026-01-04 11:26:43,425 - INFO - Ep 42: RGB_Acc=0.00% | Flow_Acc=45.47% | Cos=0.850
+2026-01-04 11:40:38,847 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 38.99% | Distill 5.4577
+2026-01-04 14:24:09,641 - INFO - Ep 43: RGB_Acc=0.00% | Flow_Acc=45.43% | Cos=0.850
+2026-01-04 14:38:03,948 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 38.86% | Distill 5.4579
+2026-01-04 17:21:30,400 - INFO - Ep 44: RGB_Acc=0.00% | Flow_Acc=45.37% | Cos=0.850
+2026-01-04 17:35:24,719 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 39.18% | Distill 5.4579
+2026-01-04 20:18:47,512 - INFO - Ep 45: RGB_Acc=0.00% | Flow_Acc=45.32% | Cos=0.850
+2026-01-04 20:32:52,154 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 38.54% | Distill 5.4572
+2026-01-04 23:16:07,693 - INFO - Ep 46: RGB_Acc=0.00% | Flow_Acc=45.41% | Cos=0.850
+2026-01-04 23:29:58,888 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 38.65% | Distill 5.4563
+2026-01-05 02:13:22,976 - INFO - Ep 47: RGB_Acc=0.00% | Flow_Acc=45.36% | Cos=0.850
+2026-01-05 02:27:19,051 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 38.75% | Distill 5.4595
+2026-01-05 05:21:00,816 - INFO - Ep 48: RGB_Acc=0.00% | Flow_Acc=45.49% | Cos=0.851
+2026-01-05 05:35:39,478 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 39.02% | Distill 5.4556
+2026-01-05 08:18:53,454 - INFO - Ep 49: RGB_Acc=0.00% | Flow_Acc=45.50% | Cos=0.851
+2026-01-05 08:32:50,758 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 39.50% | Distill 5.4559
+2026-01-05 11:17:53,423 - INFO - Ep 50: RGB_Acc=0.00% | Flow_Acc=45.41% | Cos=0.851
+2026-01-05 11:31:34,654 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 38.80% | Distill 5.4551
+2026-01-05 14:12:40,398 - INFO - Ep 51: RGB_Acc=0.00% | Flow_Acc=45.43% | Cos=0.851
+2026-01-05 14:26:22,006 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 38.81% | Distill 5.4548
+2026-01-05 17:07:33,361 - INFO - Ep 52: RGB_Acc=0.00% | Flow_Acc=45.32% | Cos=0.851
+2026-01-05 17:21:14,211 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 39.01% | Distill 5.4552
+2026-01-05 20:02:23,430 - INFO - Ep 53: RGB_Acc=0.00% | Flow_Acc=45.44% | Cos=0.851
+2026-01-05 20:16:04,559 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 39.10% | Distill 5.4541
+2026-01-05 22:57:19,694 - INFO - Ep 54: RGB_Acc=0.00% | Flow_Acc=45.51% | Cos=0.851
+2026-01-05 23:11:03,631 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 38.69% | Distill 5.4540
+2026-01-06 01:52:15,053 - INFO - Ep 55: RGB_Acc=0.00% | Flow_Acc=45.39% | Cos=0.851
+2026-01-06 02:06:07,828 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 38.91% | Distill 5.4550
+2026-01-06 04:48:37,861 - INFO - Ep 56: RGB_Acc=0.00% | Flow_Acc=45.40% | Cos=0.851
+2026-01-06 05:02:20,470 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 38.74% | Distill 5.4566
+2026-01-06 07:47:49,377 - INFO - Ep 57: RGB_Acc=0.00% | Flow_Acc=45.51% | Cos=0.851
+2026-01-06 08:01:40,394 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 39.00% | Distill 5.4533
+2026-01-06 10:43:24,673 - INFO - Ep 58: RGB_Acc=0.00% | Flow_Acc=45.53% | Cos=0.851
+2026-01-06 10:57:14,033 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 39.01% | Distill 5.4540
+2026-01-06 13:37:44,304 - INFO - Ep 59: RGB_Acc=0.00% | Flow_Acc=45.46% | Cos=0.851
+2026-01-06 13:51:22,544 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 38.75% | Distill 5.4541
+2026-01-06 16:31:30,298 - INFO - Ep 60: RGB_Acc=0.00% | Flow_Acc=45.28% | Cos=0.851
+2026-01-06 16:44:58,845 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 38.59% | Distill 5.4536
+2026-01-06 19:24:33,433 - INFO - Ep 61: RGB_Acc=0.00% | Flow_Acc=45.51% | Cos=0.851
+2026-01-06 19:38:03,224 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 39.16% | Distill 5.4542
+2026-01-06 22:17:39,468 - INFO - Ep 62: RGB_Acc=0.00% | Flow_Acc=45.43% | Cos=0.851
+2026-01-06 22:31:10,300 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 38.81% | Distill 5.4531
+2026-01-07 01:10:45,809 - INFO - Ep 63: RGB_Acc=0.00% | Flow_Acc=45.47% | Cos=0.851
+2026-01-07 01:24:20,417 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 39.34% | Distill 5.4540
+2026-01-07 04:06:04,969 - INFO - Ep 64: RGB_Acc=0.00% | Flow_Acc=45.53% | Cos=0.851
+2026-01-07 04:19:50,007 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 39.04% | Distill 5.4523
+2026-01-07 07:01:37,869 - INFO - Ep 65: RGB_Acc=0.00% | Flow_Acc=45.38% | Cos=0.851
+2026-01-07 07:15:43,685 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 38.98% | Distill 5.4519
+2026-01-07 10:00:06,533 - INFO - Ep 66: RGB_Acc=0.00% | Flow_Acc=45.45% | Cos=0.851
+2026-01-07 10:14:02,304 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 39.18% | Distill 5.4516
+2026-01-07 12:55:03,067 - INFO - Ep 67: RGB_Acc=0.00% | Flow_Acc=45.56% | Cos=0.851
+2026-01-07 13:08:32,710 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 38.93% | Distill 5.4513
+2026-01-07 15:47:58,288 - INFO - Ep 68: RGB_Acc=0.00% | Flow_Acc=45.63% | Cos=0.851
+2026-01-07 16:01:29,646 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 39.35% | Distill 5.4509
+2026-01-07 18:41:00,740 - INFO - Ep 69: RGB_Acc=0.00% | Flow_Acc=45.50% | Cos=0.851
+2026-01-07 18:54:32,153 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 38.91% | Distill 5.4506
+2026-01-07 21:33:58,163 - INFO - Ep 70: RGB_Acc=0.00% | Flow_Acc=45.56% | Cos=0.851
+2026-01-07 21:47:30,811 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 39.20% | Distill 5.4505
+2026-01-08 00:26:58,845 - INFO - Ep 71: RGB_Acc=0.00% | Flow_Acc=45.55% | Cos=0.851
+2026-01-08 00:40:31,730 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 39.47% | Distill 5.4511
+2026-01-08 03:23:33,145 - INFO - Ep 72: RGB_Acc=0.00% | Flow_Acc=45.53% | Cos=0.851
+2026-01-08 03:37:16,124 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 38.64% | Distill 5.4517
+2026-01-08 06:17:29,171 - INFO - Ep 73: RGB_Acc=0.00% | Flow_Acc=45.49% | Cos=0.851
+2026-01-08 06:30:59,697 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 39.00% | Distill 5.4502
+2026-01-08 09:12:39,173 - INFO - Ep 74: RGB_Acc=0.00% | Flow_Acc=45.51% | Cos=0.851
+2026-01-08 09:26:28,195 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 38.92% | Distill 5.4497
+2026-01-08 12:06:36,424 - INFO - Ep 75: RGB_Acc=0.00% | Flow_Acc=45.57% | Cos=0.851
+2026-01-08 12:20:06,132 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 39.17% | Distill 5.4498
+2026-01-08 14:59:36,350 - INFO - Ep 76: RGB_Acc=0.00% | Flow_Acc=45.49% | Cos=0.851
+2026-01-08 15:13:10,394 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 38.97% | Distill 5.4498
+2026-01-08 17:52:43,938 - INFO - Ep 77: RGB_Acc=0.00% | Flow_Acc=45.54% | Cos=0.851
+2026-01-08 18:06:14,533 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 39.28% | Distill 5.4504
+2026-01-08 20:45:51,098 - INFO - Ep 78: RGB_Acc=0.00% | Flow_Acc=45.57% | Cos=0.851
+2026-01-08 20:59:24,231 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 39.13% | Distill 5.4505
+2026-01-08 23:38:57,499 - INFO - Ep 79: RGB_Acc=0.00% | Flow_Acc=45.57% | Cos=0.851
+2026-01-08 23:52:31,286 - INFO -  * Val: RGB_Acc 63.75% | Flow_Acc 39.17% | Distill 5.4491
