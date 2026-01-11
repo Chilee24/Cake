@@ -16,6 +16,10 @@ FEATURE_SIZES = {
     'cake_kinetics': 4096
 }
 
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
 @META_ARCHITECTURES.register("CONTRASTIVE_MROAD")
 class ContrastiveMROADMultiQueue(nn.Module):
     def __init__(self, cfg):
@@ -24,6 +28,7 @@ class ContrastiveMROADMultiQueue(nn.Module):
         self.hidden_dim = cfg.get('hidden_dim', 2048)
         self.num_classes = cfg['num_classes']
         self.bg_class_idx = cfg.get('bg_class_idx', 0)
+        self.mask_ratio = cfg.get('mask_ratio', 0.25) 
         
         # Queue Size per Class
         self.K = cfg.get('queue_size_per_class', 1024) 
@@ -69,29 +74,15 @@ class ContrastiveMROADMultiQueue(nn.Module):
 
     @torch.no_grad()
     def _dequeue_and_enqueue(self, keys, targets_multihot):
-        """
-        [MODIFIED] LABEL-WISE CLONING STRATEGY
-        keys: [B, D]
-        targets_multihot: [B, C] - Vector Float (0/1)
-        """
-        # Duyệt qua từng Class (C)
+        # ... (Giữ nguyên logic update queue như cũ) ...
         for c in range(self.num_classes):
-            # Tìm các mẫu trong batch có chứa label c
-            # targets_multihot[:, c] > 0.5 trả về mask True/False
-            # nonzero() trả về indices của các mẫu đó
             idxs = torch.nonzero(targets_multihot[:, c] > 0.5).squeeze(1)
+            if idxs.numel() == 0: continue
             
-            if idxs.numel() == 0:
-                continue # Không có mẫu nào trong batch thuộc class này
-            
-            # Lấy subset keys thuộc class c
-            keys_subset = keys[idxs] # [N_subset, D]
+            keys_subset = keys[idxs]
             n_subset = keys_subset.shape[0]
-            
-            # Lấy pointer của queue c
             ptr = int(self.queue_ptrs[c])
             
-            # Logic Circular Buffer (Update riêng cho queue c)
             if ptr + n_subset <= self.K:
                 self.queues[c, :, ptr : ptr + n_subset] = keys_subset.T
                 ptr = (ptr + n_subset) % self.K
@@ -101,28 +92,48 @@ class ContrastiveMROADMultiQueue(nn.Module):
                 overflow = n_subset - remaining
                 self.queues[c, :, :overflow] = keys_subset[remaining:].T
                 ptr = overflow
-            
-            # Cập nhật pointer
             self.queue_ptrs[c] = ptr
 
     def forward(self, rgb_anchor, flow_anchor, labels, targets_multihot=None, labels_per_frame=None):
-        """
-        Output: q_core, q_aug, k_cls
-        """
-        feat_student = self.encoder_q(rgb_anchor, flow_anchor, return_embedding=True)
+        if self.training and self.mask_ratio > 0:
+            B, T, D = rgb_anchor.shape
+            device = rgb_anchor.device
+            
+            # 1. Tạo mask cho T-1 frame đầu (Ngẫu nhiên 0 hoặc 1)
+            # mask_ratio là xác suất bị che (giá trị 0)
+            # rand > mask_ratio -> Giữ lại (1), ngược lại là che (0)
+            rand_tensor = torch.rand(B, T - 1, 1, device=device)
+            mask_past = (rand_tensor > self.mask_ratio).float()
+            
+            # 2. Tạo mask cho frame cuối (Luôn giữ lại = 1)
+            mask_last = torch.ones(B, 1, 1, device=device)
+            
+            # 3. Gộp lại: [B, T, 1]
+            mask = torch.cat([mask_past, mask_last], dim=1)
+
+            # 4. Áp dụng mask
+            rgb_student = rgb_anchor * mask
+            flow_student = flow_anchor * mask
+        else:
+            # Nếu test hoặc mask_ratio=0 thì giữ nguyên
+            rgb_student = rgb_anchor
+            flow_student = flow_anchor
+
+        # --- STUDENT FORWARD (Dùng masked input) ---
+        feat_student = self.encoder_q(rgb_student, flow_student, return_embedding=True)
         q_student = F.normalize(self.head_queue(feat_student), dim=1) 
 
-        # C. ENCODER TEACHER
+        # --- TEACHER FORWARD (Luôn dùng input sạch - Clean Input) ---
         with torch.no_grad():
             self._momentum_update_key_encoder() 
+            # Teacher nhìn thấy toàn bộ dữ liệu gốc
             feat_k = self.encoder_k(rgb_anchor, flow_anchor, return_embedding=True)
             k_cls = F.normalize(self.head_queue(feat_k), dim=1)
         
-        # D. RETURN
         return {
             'q_cls': q_student,      
             'k_cls': k_cls,        
-            'queues': self.queues, # [C, D, K]
+            'queues': self.queues,
             'queue_ptrs': self.queue_ptrs
         }
     

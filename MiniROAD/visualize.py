@@ -131,7 +131,7 @@ def main():
     parser = argparse.ArgumentParser()
     # Sửa đường dẫn mặc định cho khớp môi trường Kaggle/Colab của bạn
     parser.add_argument('--config', type=str, default=r'D:\project\Cake\MiniROAD\configs\thumos_contrastive.yaml')
-    parser.add_argument('--checkpoint', type=str, default=r'D:\project\Cake\MiniROAD\best_model.pth')
+    parser.add_argument('--checkpoint', type=str, default=r'C:\Users\hieuh\Downloads\infoNCE_multi_queue_87.32.pth')
     args = parser.parse_args()
 
     # Load Config
