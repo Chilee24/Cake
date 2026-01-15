@@ -16,10 +16,6 @@ FEATURE_SIZES = {
     'cake_kinetics': 4096
 }
 
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-
 @META_ARCHITECTURES.register("CONTRASTIVE_MROAD")
 class ContrastiveMROADMultiQueue(nn.Module):
     def __init__(self, cfg):

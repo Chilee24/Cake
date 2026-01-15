@@ -15,7 +15,7 @@ output_path: './output_cls'
 window_size: 128 
 batch_size: 16 
 test_batch_size: 1
-num_epoch: 10 
+num_epoch: 20 
 lr: 0.0001 
 weight_decay: 0.05
 num_workers: 0
@@ -27,7 +27,7 @@ num_layers: 1
 stride: 4
 no_flow: False
 no_rgb: False
-contrastive_path: 'D:\project\Cake\MiniROAD\best_model.pth'
+contrastive_path: 'C:\Users\hieuh\Downloads\checkpoint_epoch_2.pth'
 freeze_backbone: True
 bg_class_idx: 0
 warmup_epoch: 1
