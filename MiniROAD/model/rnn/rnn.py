@@ -25,28 +25,22 @@ class ContrastiveMROADMultiQueue(nn.Module):
         self.num_classes = cfg['num_classes']
         self.bg_class_idx = cfg.get('bg_class_idx', 0)
         self.mask_ratio = cfg.get('mask_ratio', 0.25) 
-        
-        # Queue Size per Class
         self.K = cfg.get('queue_size_per_class', 1024) 
         self.m = cfg.get('momentum', 0.999)
-
-        # Init Encoders
+        
         self.encoder_q = MROAD(cfg)
         self.encoder_k = MROAD(cfg)
 
         if cfg.get('pretrained_backbone_path'):
             self._load_pretrained_backbone(cfg['pretrained_backbone_path'])
-
         # Copy weight k <- q
         for param_q, param_k in zip(self.encoder_q.parameters(), self.encoder_k.parameters()):
             param_k.data.copy_(param_q.data)
             param_k.requires_grad = False 
-
         # Projection Head
         self.head_queue = nn.Sequential(
             nn.Linear(self.hidden_dim, self.contrastive_dim)
         )
-
         # Memory Bank: [Classes, Dim, K]
         self.register_buffer("queues", torch.randn(self.num_classes, self.contrastive_dim, self.K))
         self.queues = F.normalize(self.queues, dim=1) 
@@ -70,7 +64,6 @@ class ContrastiveMROADMultiQueue(nn.Module):
 
     @torch.no_grad()
     def _dequeue_and_enqueue(self, keys, targets_multihot):
-        # ... (Giữ nguyên logic update queue như cũ) ...
         for c in range(self.num_classes):
             idxs = torch.nonzero(targets_multihot[:, c] > 0.5).squeeze(1)
             if idxs.numel() == 0: continue
@@ -94,35 +87,23 @@ class ContrastiveMROADMultiQueue(nn.Module):
         if self.training and self.mask_ratio > 0:
             B, T, D = rgb_anchor.shape
             device = rgb_anchor.device
-            
-            # 1. Tạo mask cho T-1 frame đầu (Ngẫu nhiên 0 hoặc 1)
-            # mask_ratio là xác suất bị che (giá trị 0)
-            # rand > mask_ratio -> Giữ lại (1), ngược lại là che (0)
             rand_tensor = torch.rand(B, T - 1, 1, device=device)
             mask_past = (rand_tensor > self.mask_ratio).float()
-            
-            # 2. Tạo mask cho frame cuối (Luôn giữ lại = 1)
             mask_last = torch.ones(B, 1, 1, device=device)
-            
-            # 3. Gộp lại: [B, T, 1]
             mask = torch.cat([mask_past, mask_last], dim=1)
-
-            # 4. Áp dụng mask
             rgb_student = rgb_anchor * mask
             flow_student = flow_anchor * mask
         else:
-            # Nếu test hoặc mask_ratio=0 thì giữ nguyên
             rgb_student = rgb_anchor
             flow_student = flow_anchor
 
-        # --- STUDENT FORWARD (Dùng masked input) ---
+        # --- STUDENT FORWARD---
         feat_student = self.encoder_q(rgb_student, flow_student, return_embedding=True)
         q_student = F.normalize(self.head_queue(feat_student), dim=1) 
 
-        # --- TEACHER FORWARD (Luôn dùng input sạch - Clean Input) ---
+        # --- TEACHER FORWARD---
         with torch.no_grad():
             self._momentum_update_key_encoder() 
-            # Teacher nhìn thấy toàn bộ dữ liệu gốc
             feat_k = self.encoder_k(rgb_anchor, flow_anchor, return_embedding=True)
             k_cls = F.normalize(self.head_queue(feat_k), dim=1)
         
