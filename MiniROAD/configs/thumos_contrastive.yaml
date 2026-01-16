@@ -2,7 +2,7 @@ annotation_type: target_perframe
 backbone_lr: 0.0001
 batch_size: 128
 bg_class_idx: 0
-data_name: THUMOS
+data_name: THUMOS_CONTRASTIVE
 device: cuda
 dropout: 0.2
 embedding_dim: 2048
