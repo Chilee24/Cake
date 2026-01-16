@@ -19,7 +19,7 @@ FEATURE_SIZES = {
     'flow_kinetics_x3d': 2048
 }
 
-#@DATA_LAYERS.register("THUMOS")
+@DATA_LAYERS.register("THUMOS")
 class ContrastiveOADDataset(data.Dataset):
     
     def __init__(self, cfg, mode='train'):
@@ -151,8 +151,8 @@ class ContrastiveOADDataset(data.Dataset):
     def __len__(self):
         return len(self.inputs)
 
-@DATA_LAYERS.register("THUMOS")
-@DATA_LAYERS.register("TVSERIES")
+# @DATA_LAYERS.register("THUMOS")
+# @DATA_LAYERS.register("TVSERIES")
 class THUMOSDataset(data.Dataset):
     def __init__(self, cfg, mode='train'):
         self.root_path = cfg['root_path']

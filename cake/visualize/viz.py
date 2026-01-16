@@ -9,14 +9,8 @@ import random
 import argparse
 from torchvision.utils import flow_to_image 
 sys.path.append("..")
-
-# --- CONFIG & IMPORTS ---
-try:
-    from cake import BioX3D_Student
-    from teacher_utils import TeacherPipeline
-except ImportError:
-    print("❌ Hãy đặt file này cùng thư mục với cake.py và teacher_utils.py")
-    sys.exit(1)
+from cake import BioX3D_Student
+from teacher_utils import TeacherPipeline
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 

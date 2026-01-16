@@ -10,6 +10,8 @@ __pycache__/
 *.swp
 *.pyc
 *.pkl
+*.mp4
+*.jpg
 
 # Dataset soft links
 data/
