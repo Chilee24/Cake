@@ -9,7 +9,7 @@ class MultiLabelQueueInfoNCELoss(nn.Module):
         super(MultiLabelQueueInfoNCELoss, self).__init__()
         self.T = cfg.get("temperature", 0.07)
         self.bg_class_idx = cfg.get("bg_class_idx", 0)
-        self.bg_separation_bias = -0.0 # Hệ số phạt Nền (đẩy xa)
+        self.bg_separation_bias = -2.0 # Hệ số phạt Nền (đẩy xa)
 
     def forward(self, output_dict, targets_multihot):
         """

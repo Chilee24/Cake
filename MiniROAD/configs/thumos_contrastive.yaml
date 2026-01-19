@@ -22,10 +22,10 @@ num_layers: 1
 num_workers: 4
 optimizer: AdamW
 output_path: ./output_contrastive
-pretrained_backbone_path: /kaggle/input/thumos14/THUMOS_Kinetics.pth
+pretrained_backbone_path: C:\Users\hieuh\Downloads\best_model.pth
 queue_size_per_class: 512
 rgb_type: rgb_kinetics_resnet50
-root_path: /kaggle/input/thumos14/thumos14/thumos14
+root_path: D:\project\DashCam\data\thumos14
 stride: 4
 task: CONTRASTIVE
 temperature: 0.07

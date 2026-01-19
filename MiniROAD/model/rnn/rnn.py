@@ -48,7 +48,7 @@ class ContrastiveMROADMultiQueue(nn.Module):
 
     def _load_pretrained_backbone(self, path):
         print(f"--> Loading Pre-trained Backbone from: {path}")
-        checkpoint = torch.load(path, map_location='cpu')
+        checkpoint = torch.load(path, map_location='cpu', weights_only=False)
         state_dict = checkpoint['state_dict'] if 'state_dict' in checkpoint else checkpoint
         backbone_dict = {}
         for k, v in state_dict.items():

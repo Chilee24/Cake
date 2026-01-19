@@ -181,95 +181,94 @@ class BioX3D_Student(nn.Module):
 # ==================================================================
 # 3. TEST
 # ==================================================================
+# ==================================================================
+# 3. ANALYSIS & TEST (UPDATED FOR PAPER MATCHING)
+# ==================================================================
 if __name__ == "__main__":
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    BATCH = 2
-    FRAMES = 13
-    
     try:
+        from thop import profile
+    except ImportError:
+        print("⚠️ Cần cài đặt thop: pip install thop")
+        exit()
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
+    # --- CẤU HÌNH INPUT ĐỂ KHỚP PAPER X3D-S ---
+    # Paper X3D-S dùng size 160x160 cho input 13 frames
+    # Nếu bạn dùng 224x224 thì GFLOPS sẽ cao hơn (khoảng gấp 1.9 lần)
+    FRAMES = 13
+    IMG_SIZE = 182  # Đổi về 160 nếu muốn khớp con số ~1.96 GFLOPS của paper
+    #IMG_SIZE = 224 # Dùng 224 nếu project của bạn chạy 224 (GFLOPS sẽ to hơn)
+    
+    BATCH = 1
+    
+    print("\n" + "="*60)
+    print(f"📊 BIO-X3D EFFICIENCY REPORT (Input: {IMG_SIZE}x{IMG_SIZE}, {FRAMES} frames)")
+    print("="*60)
+
+    try:
+        # 1. Init Model
         model = BioX3D_Student(clip_len=FRAMES).to(device)
-        print("\n✅ Model created!")
+        model.eval()
+        dummy_input = torch.randn(BATCH, 3, FRAMES, IMG_SIZE, IMG_SIZE).to(device)
+
+        # ---------------------------------------------------------
+        # A. TÍNH PARAMS (Chi tiết từng phần)
+        # ---------------------------------------------------------
+        total_params = sum(p.numel() for p in model.parameters())
+        rgb_head_params = sum(p.numel() for p in model.head.parameters())
+        flow_head_params = sum(p.numel() for p in model.flow_head.parameters())
         
-        # Test input
-        dummy = torch.randn(BATCH, 3, FRAMES, 224, 224).to(device)
-        rgb_logits, flow_logits, rgb_feat, flow_feat = model(dummy)
+        # Params cốt lõi (Bỏ 2 head phân loại)
+        backbone_no_head_params = total_params - rgb_head_params - flow_head_params
+
+        # ---------------------------------------------------------
+        # B. TÍNH GFLOPS (Theo chuẩn Paper: GFLOPS = G-MACs)
+        # ---------------------------------------------------------
+        print("🔄 Profiling GFLOPS...")
         
-        print(f"\nShape Check:")
-        print(f"RGB Logits: {rgb_logits.shape} (Expect {BATCH}, 400)")
-        print(f"Flow Logits: {flow_logits.shape} (Expect {BATCH}, 400)")
-        print(f"Flow Feat: {flow_feat.shape} (Expect {BATCH}, 192, {FRAMES}, 7, 7)")
+        # 1. Tính toàn bộ Model
+        macs_total, _ = profile(model, inputs=(dummy_input, ), verbose=False)
         
-        print(f"\n🧪 Sanity Check (Logits vs Softmax):")
-        sample_output = rgb_logits[0]
-        print(f"   - Min val: {sample_output.min().item():.4f}")
-        print(f"   - Max val: {sample_output.max().item():.4f}")
-        print(f"   - Sum val: {sample_output.sum().item():.4f}")
+        # [QUAN TRỌNG] Paper X3D báo cáo GFLOPS thực chất là G-MACs (Multiply-Adds)
+        # Nên ta KHÔNG nhân 2 ở đây.
+        gflops_total = macs_total / 1e9  
         
-        if abs(sample_output.sum().item() - 1.0) > 0.1:
-             print("   ✅ Kết luận: Output là LOGITS (Vì tổng != 1)")
-        else:
-             print("   ⚠️ Kết luận: Output có thể là SOFTMAX (Vì tổng ~ 1)")
+        # 2. Tính riêng Backbone (Phần Feature Extractor)
+        # (Chỉ chạy qua blocks, không chạy qua head)
+        macs_backbone, _ = profile(model.blocks, inputs=(dummy_input, ), verbose=False)
+        gflops_backbone = macs_backbone / 1e9
+
+        # ---------------------------------------------------------
+        # C. KẾT QUẢ
+        # ---------------------------------------------------------
+        print("-" * 60)
+        print(f"{'METRIC':<30} | {'VALUE':<20}")
+        print("-" * 60)
         
-        if rgb_logits.shape == flow_logits.shape == (BATCH, 400):
-            print("\n🎉 Verification Passed!")
-            
+        # 1. Params
+        print(f"{'Params (Full Model)':<30} | {total_params / 1e6:.2f} M")
+        print(f"{'Params (Backbone Only)':<30} | {backbone_no_head_params / 1e6:.2f} M")
+        print(f"{' - RGB Head':<30} | {rgb_head_params / 1e6:.2f} M")
+        print(f"{' - Flow Head':<30} | {flow_head_params / 1e6:.2f} M")
+        
+        print("-" * 60)
+        
+        # 2. GFLOPS
+        print(f"{'GFLOPS (Full Model)':<30} | {gflops_total:.3f} G")
+        print(f"{'GFLOPS (Backbone Only)':<30} | {gflops_backbone:.3f} G")
+        
+        # 3. So sánh với Paper
+        if IMG_SIZE == 160:
+            print("-" * 60)
+            print(f"📝 Note: Paper X3D-S report ~1.96 GFLOPS.")
+            print(f"   Model của bạn: {gflops_backbone:.3f} G (Backbone) + Head/Adapter overhead.")
+        elif IMG_SIZE == 224:
+            print("-" * 60)
+            print(f"📝 Note: Bạn đang chạy size 224x224.")
+            print(f"   GFLOPS sẽ cao hơn paper (160x160) khoảng {(224/160)**2:.1f} lần.")
+
+        print("="*60)
+
     except Exception as e:
-        import traceback
-        traceback.print_exc()
         print(f"\n❌ Error: {e}")
-    model.to(device)
-    model.eval() # Chuyển sang chế độ eval
-
-    # 3. Tạo dữ liệu giả lập (B, C, T, H, W)
-    # X3D yêu cầu input 3 kênh màu (RGB)
-    dummy_input = torch.randn(BATCH_SIZE, 3, CLIP_LEN, RESOLUTION, RESOLUTION).to(device)
-
-    print(f"\n🚀 Đang chạy inference với input shape: {dummy_input.shape}")
-
-    with torch.no_grad():
-        # 4. Forward pass qua model
-        # Sử dụng return_embeddings=True để lấy các feature map trước head
-        rgb_logits, flow_logits, rgb_feat_map, flow_feat_map, rgb_embed_internal, flow_embed_internal = model(
-            dummy_input, return_embeddings=True
-        )
-
-    print("-" * 30)
-    print(f"✅ Feature map RGB (trước head): {rgb_feat_map.shape}")
-    print(f"✅ Feature map Flow (trước head): {flow_feat_map.shape}")
-
-    # 5. Áp dụng các lớp Pool từ Head vào các feature map vừa lấy được
-    # Lưu ý: Head của X3D thường có .pool và .output_pool
-    
-    def manual_pooling(feat, head_module):
-        # Bước A: Spatial-Temporal Pooling (thường là AdaptiveAvgPool3d)
-        pooled = head_module.pool(feat)
-        # Bước B: Global pooling cuối cùng trước khi flatten
-        pooled = head_module.output_pool(pooled)
-        # Bước C: Flatten để tạo vector embedding
-        embedding = pooled.flatten(1)
-        return embedding
-
-    # Thực hiện pooling cho nhánh RGB
-    rgb_pooled_manual = manual_pooling(rgb_feat_map, model.head)
-    
-    # Thực hiện pooling cho nhánh Flow
-    flow_pooled_manual = manual_pooling(flow_feat_map, model.flow_head)
-
-    print("-" * 30)
-    print(f"📊 Kết quả pooling thủ công:")
-    print(f"   -> RGB Pooled shape: {rgb_pooled_manual.shape}")
-    print(f"   -> Flow Pooled shape: {flow_pooled_manual.shape}")
-
-    # 6. Kiểm chứng (So sánh với embedding mà model tự tính bên trong)
-    diff_rgb = torch.norm(rgb_pooled_manual - rgb_embed_internal)
-    diff_flow = torch.norm(flow_pooled_manual - flow_embed_internal)
-
-    print("-" * 30)
-    print(f"🔍 Kiểm tra sai số (so với internal embedding):")
-    print(f"   -> Sai số RGB: {diff_rgb.item():.6f}")
-    print(f"   -> Sai số Flow: {diff_flow.item():.6f}")
-
-    if diff_rgb < 1e-5 and diff_flow < 1e-5:
-        print("\n✨ KẾT QUẢ TRÙNG KHỚP! Bạn đã lấy và pooling feature thành công.")
-    else:
-        print("\n⚠️ Có sự khác biệt nhỏ, hãy kiểm tra lại cấu trúc head.")
