@@ -167,11 +167,11 @@ The metric used is **mcAP**.
 
 Visualization of CAKE’s motion hallucination on the *Feeding Birds* sequence:
 
-![Motion Hallucination Visualization](assets\vis_output_YzBHZD1M_4Y\viz_1.jpg)
-![Motion Hallucination Visualization](assets\vis_output_YzBHZD1M_4Y\viz_2.jpg)
-![Motion Hallucination Visualization](assets\vis_output_YzBHZD1M_4Y\viz_3.jpg)
-![Motion Hallucination Visualization](assets\vis_output_YzBHZD1M_4Y\viz_4.jpg)
-![Motion Hallucination Visualization](assets\vis_output_YzBHZD1M_4Y\viz_5.jpg)
+![Motion Hallucination Visualization](assets/vis_output_YzBHZD1M_4Y/viz_1.jpg)
+![Motion Hallucination Visualization](assets/vis_output_YzBHZD1M_4Y/viz_2.jpg)
+![Motion Hallucination Visualization](assets/vis_output_YzBHZD1M_4Y/viz_3.jpg)
+![Motion Hallucination Visualization](assets/vis_output_YzBHZD1M_4Y/viz_4.jpg)
+![Motion Hallucination Visualization](assets/vis_output_YzBHZD1M_4Y/viz_5.jpg)
 
 *The last row shows that CAKE (via DMA) accurately focuses on the motion of the birds and the hand, closely matching the Optical Flow Teacher, while the standard RGB model is distracted by static background regions.*
 
