@@ -1,4 +1,71 @@
 {
+    "TVSERIES_CONTRASTIVE": {
+        "class_index": [
+            "background",
+            "Pick something up",
+            "Point",
+            "Drink",
+            "Stand up",
+            "Run",
+            "Sit down",
+            "Read",
+            "Smoke",
+            "Drive car",
+            "Open door",
+            "Give something",
+            "Use computer",
+            "Write",
+            "Go down stairway",
+            "Close door",
+            "Throw something",
+            "Go up stairway",
+            "Get in/out of car",
+            "Hang up phone",
+            "Eat",
+            "Answer phone",
+            "Dress up",
+            "Clap",
+            "Undress",
+            "Kiss",
+            "Fall/trip",
+            "Wave",
+            "Pour",
+            "Punch",
+            "Fire weapon"
+        ],
+        "train_session_set": [
+            "24_ep1",
+            "24_ep2",
+            "24_ep3",
+            "Breaking_Bad_ep1",
+            "Breaking_Bad_ep2",
+            "How_I_Met_Your_Mother_ep1",
+            "How_I_Met_Your_Mother_ep2",
+            "How_I_Met_Your_Mother_ep3",
+            "How_I_Met_Your_Mother_ep4",
+            "How_I_Met_Your_Mother_ep5",
+            "How_I_Met_Your_Mother_ep6",
+            "Mad_Men_ep1",
+            "Mad_Men_ep2",
+            "Modern_Family_ep1",
+            "Modern_Family_ep2",
+            "Modern_Family_ep3",
+            "Modern_Family_ep4",
+            "Modern_Family_ep6",
+            "Sons_of_Anarchy_ep1",
+            "Sons_of_Anarchy_ep2"
+        ],
+        "test_session_set": [
+            "24_ep4",
+            "Breaking_Bad_ep3",
+            "Mad_Men_ep3",
+            "How_I_Met_Your_Mother_ep7",
+            "How_I_Met_Your_Mother_ep8",
+            "Modern_Family_ep5",
+            "Sons_of_Anarchy_ep3"
+        ]
+    },
+
     "TVSERIES": {
         "class_index": [
             "background",
@@ -508,7 +575,6 @@
             "video_test_0001292"
         ]
     },
-    
     "THUMOS_CONTRASTIVE": {
         "class_index": [
             "Background",
@@ -950,6 +1016,43 @@
             "video_test_0001468",
             "video_test_0000846",
             "video_test_0001292"
+        ]
+    },
+    "DASHCAM": {
+        "class_index": [
+            "Background",
+            "Distracted",
+            "Hands_off_wheel",
+            "Head_check_left",
+            "Head_check_right",
+            "Head_turn_back",
+            "Not_wearing_seatbelt",
+            "One_hand_off_wheel",
+            "Smoking",
+            "Turn_left",
+            "Turn_right",
+            "Using_phone"
+        ],
+        "train_session_set": [
+            "0032002C37_2025-09-15_Cam1_Segment2",
+            "0032002C37_2025-09-15_Cam1_Segment3",
+            "0032002C37_2025-09-15_Cam1_Segment4",
+            "003200479D_2025-09-17_Cam1_Segment0",
+            "003200479D_2025-09-17_Cam1_Segment1",
+            "003200479D_2025-09-17_Cam1_Segment2",
+            "003200479D_2025-09-17_Cam1_Segment3",
+            "003200479D_2025-09-17_Cam1_Segment4",
+            "003200479D_2025-09-17_Cam1_Segment5",
+            "trong_000",
+            "trong_000_2025-09-15",
+            "trong_001",
+            "trong_001_2025-09-15",
+            "trong_002",
+            "trong_003"
+        ],
+        "test_session_set": [
+            "0032002C37_2025-09-15_Cam1_Segment0",
+            "0032002C37_2025-09-15_Cam1_Segment1"
         ]
     }
 }

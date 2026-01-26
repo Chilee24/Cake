@@ -116,7 +116,7 @@ def get_clip_indices(total_frames, orig_fps, args):
     else:
         frame_idxs = np.arange(total_frames)
 
-    sample_rate = 3
+    sample_rate = 6
     window_span = (args.clip_len - 1) * sample_rate + 1 # 73 frames cho 3 giây
 
     if len(frame_idxs) < window_span:

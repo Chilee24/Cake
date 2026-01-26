@@ -3,7 +3,7 @@ import torch.nn as nn
 import pytorchvideo.models.x3d as x3d
 import logging
 import copy
-from odconv3d import ODConv3d
+from cake.odconv3d import ODConv3d
 
 class FlowHallucinationBlock(nn.Module):
     def __init__(self, in_channels):
@@ -68,6 +68,16 @@ class BioX3D_Student(nn.Module):
         #     nn.Conv3d(feature_dim // 4, feature_dim, kernel_size=1, bias=False),
         #     nn.BatchNorm3d(feature_dim),
         #     nn.ReLU(inplace=True)
+        # )
+
+        # self.flow_adapter = nn.Sequential(
+        #     ODConv3d(in_planes=feature_dim, out_planes=feature_dim // 4, kernel_size=(1, 1, 1), stride=1, padding=0, reduction=0.0625, kernel_num=1),
+        #     nn.BatchNorm3d(feature_dim // 4),
+        #     nn.ReLU(inplace=True),
+        #     ODConv3d(in_planes=feature_dim // 4, out_planes=feature_dim, kernel_size=(1, 1, 1), stride=1, padding=0, reduction=0.0625, kernel_num=1),
+        #     nn.BatchNorm3d(feature_dim),
+        #     nn.ReLU(inplace=True)
+
         # )
         
         self.flow_adapter = nn.Sequential(
@@ -211,94 +221,39 @@ class BioX3D_Student(nn.Module):
 # ==================================================================
 # 3. TEST
 # ==================================================================
-# ==================================================================
-# 3. ANALYSIS & TEST (UPDATED FOR PAPER MATCHING)
-# ==================================================================
 if __name__ == "__main__":
-    try:
-        from thop import profile
-    except ImportError:
-        print("⚠️ Cần cài đặt thop: pip install thop")
-        exit()
-
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    
-    # --- CẤU HÌNH INPUT ĐỂ KHỚP PAPER X3D-S ---
-    # Paper X3D-S dùng size 160x160 cho input 13 frames
-    # Nếu bạn dùng 224x224 thì GFLOPS sẽ cao hơn (khoảng gấp 1.9 lần)
+    BATCH = 2
     FRAMES = 13
-    IMG_SIZE = 182  # Đổi về 160 nếu muốn khớp con số ~1.96 GFLOPS của paper
-    #IMG_SIZE = 224 # Dùng 224 nếu project của bạn chạy 224 (GFLOPS sẽ to hơn)
     
-    BATCH = 1
-    
-    print("\n" + "="*60)
-    print(f"📊 BIO-X3D EFFICIENCY REPORT (Input: {IMG_SIZE}x{IMG_SIZE}, {FRAMES} frames)")
-    print("="*60)
-
     try:
-        # 1. Init Model
         model = BioX3D_Student(clip_len=FRAMES).to(device)
-        model.eval()
-        dummy_input = torch.randn(BATCH, 3, FRAMES, IMG_SIZE, IMG_SIZE).to(device)
-
-        # ---------------------------------------------------------
-        # A. TÍNH PARAMS (Chi tiết từng phần)
-        # ---------------------------------------------------------
-        total_params = sum(p.numel() for p in model.parameters())
-        rgb_head_params = sum(p.numel() for p in model.head.parameters())
-        flow_head_params = sum(p.numel() for p in model.flow_head.parameters())
+        print("\n✅ Model created!")
         
-        # Params cốt lõi (Bỏ 2 head phân loại)
-        backbone_no_head_params = total_params - rgb_head_params - flow_head_params
-
-        # ---------------------------------------------------------
-        # B. TÍNH GFLOPS (Theo chuẩn Paper: GFLOPS = G-MACs)
-        # ---------------------------------------------------------
-        print("🔄 Profiling GFLOPS...")
+        # Test input
+        dummy = torch.randn(BATCH, 3, FRAMES, 224, 224).to(device)
+        rgb_logits, flow_logits, rgb_feat, flow_feat = model(dummy)
         
-        # 1. Tính toàn bộ Model
-        macs_total, _ = profile(model, inputs=(dummy_input, ), verbose=False)
+        print(f"\nShape Check:")
+        print(f"RGB Logits: {rgb_logits.shape} (Expect {BATCH}, 400)")
+        print(f"Flow Logits: {flow_logits.shape} (Expect {BATCH}, 400)")
+        print(f"Flow Feat: {flow_feat.shape} (Expect {BATCH}, 192, {FRAMES}, 7, 7)")
         
-        # [QUAN TRỌNG] Paper X3D báo cáo GFLOPS thực chất là G-MACs (Multiply-Adds)
-        # Nên ta KHÔNG nhân 2 ở đây.
-        gflops_total = macs_total / 1e9  
+        print(f"\n🧪 Sanity Check (Logits vs Softmax):")
+        sample_output = rgb_logits[0] # Lấy mẫu đầu tiên
+        print(f"   - Min val: {sample_output.min().item():.4f}")
+        print(f"   - Max val: {sample_output.max().item():.4f}")
+        print(f"   - Sum val: {sample_output.sum().item():.4f}")
         
-        # 2. Tính riêng Backbone (Phần Feature Extractor)
-        # (Chỉ chạy qua blocks, không chạy qua head)
-        macs_backbone, _ = profile(model.blocks, inputs=(dummy_input, ), verbose=False)
-        gflops_backbone = macs_backbone / 1e9
-
-        # ---------------------------------------------------------
-        # C. KẾT QUẢ
-        # ---------------------------------------------------------
-        print("-" * 60)
-        print(f"{'METRIC':<30} | {'VALUE':<20}")
-        print("-" * 60)
+        if abs(sample_output.sum().item() - 1.0) > 0.1:
+             print("   ✅ Kết luận: Output là LOGITS (Vì tổng != 1)")
+        else:
+             print("   ⚠️ Kết luận: Output có thể là SOFTMAX (Vì tổng ~ 1)")
         
-        # 1. Params
-        print(f"{'Params (Full Model)':<30} | {total_params / 1e6:.2f} M")
-        print(f"{'Params (Backbone Only)':<30} | {backbone_no_head_params / 1e6:.2f} M")
-        print(f"{' - RGB Head':<30} | {rgb_head_params / 1e6:.2f} M")
-        print(f"{' - Flow Head':<30} | {flow_head_params / 1e6:.2f} M")
-        
-        print("-" * 60)
-        
-        # 2. GFLOPS
-        print(f"{'GFLOPS (Full Model)':<30} | {gflops_total:.3f} G")
-        print(f"{'GFLOPS (Backbone Only)':<30} | {gflops_backbone:.3f} G")
-        
-        # 3. So sánh với Paper
-        if IMG_SIZE == 160:
-            print("-" * 60)
-            print(f"📝 Note: Paper X3D-S report ~1.96 GFLOPS.")
-            print(f"   Model của bạn: {gflops_backbone:.3f} G (Backbone) + Head/Adapter overhead.")
-        elif IMG_SIZE == 224:
-            print("-" * 60)
-            print(f"📝 Note: Bạn đang chạy size 224x224.")
-            print(f"   GFLOPS sẽ cao hơn paper (160x160) khoảng {(224/160)**2:.1f} lần.")
-
-        print("="*60)
-
+        if rgb_logits.shape == flow_logits.shape == (BATCH, 400):
+            print("\n🎉 Verification Passed!")
+            
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         print(f"\n❌ Error: {e}")

@@ -26,8 +26,7 @@ except ImportError:
 # ==============================================================================
 # 0. UTILS
 # ==============================================================================
-# [FIX] Hàm set nhiệt độ cho ODConv
-def set_odconv_temperature(model, temperature=3.0):
+def set_odconv_temperature(model, temperature=4.6):
     count = 0
     for m in model.modules():
         if hasattr(m, 'update_temperature'):
@@ -70,7 +69,7 @@ class Kinetics30ViewsDataset(Dataset):
         try:
             vr = decord.VideoReader(full_path)
             total_frames = len(vr)
-        except Exception as e:
+        except Exception:
             return None, None
 
         clip_span = (self.clip_len - 1) * self.sampling_rate + 1
@@ -106,7 +105,6 @@ class Kinetics30ViewsDataset(Dataset):
 
             input_clips.extend([c1, c2, c3])
 
-        # Kết quả: (30, C, T, H, W)
         views = torch.stack(input_clips).permute(0, 2, 1, 3, 4)
         return views, label
 
@@ -122,37 +120,34 @@ def collate_fn_safe(batch):
 def main(args):
     device = torch.device("cuda")
     
-    # 1. Model
+    # 1. Model Setup
     print(f"🏗️ Building Model (Batch Size: {args.batch_size})...")
     model = BioX3D_Student(clip_len=args.clip_len, num_classes=400, feature_dim=192)
     model = model.to(device)
-    model.eval()
     
-    # Load Checkpoint
     if os.path.exists(args.weights):
+        print(f"📥 Loading weights from: {args.weights}")
         ckpt = torch.load(args.weights, map_location='cpu')
         state = ckpt['state_dict'] if 'state_dict' in ckpt else ckpt
         new_state = {k.replace('module.', ''): v for k, v in state.items()}
         
-        # Load strict=True để đảm bảo load hết
         try:
             model.load_state_dict(new_state, strict=True)
-            print("✅ Weights Loaded (Strict).")
+            print("✅ Weights Loaded (Strict Mode).")
         except:
             print("⚠️ Load strict failed, trying loose load...")
             model.load_state_dict(new_state, strict=False)
 
-        # [QUAN TRỌNG] FIX LỖI 5% ACCURACY
-        # Set nhiệt độ về 1.0 (giá trị cuối cùng của quá trình training)
-        set_odconv_temperature(model, temperature=4.54)
-
+        # Set nhiệt độ tối ưu cho ODConv (4.6 cho epoch 17)
+        set_odconv_temperature(model, temperature=2.8)
     else:
         print(f"❌ Weights not found: {args.weights}")
         return
 
+    model.eval()
     normalizer = X3D_Normalizer().to(device)
 
-    # 2. DataLoader
+    # 2. DataLoader Setup
     dataset = Kinetics30ViewsDataset(
         root_dir=args.root,
         list_file=args.test_list,
@@ -172,12 +167,12 @@ def main(args):
     )
 
     print(f"🚀 Testing on {len(dataset)} videos | Workers: {args.workers}")
+    print(f"🔥 Strategy: Conditional Confidence Fusion (Thresh: {args.conf_thresh} | RGB_W: {args.rgb_weight})")
 
     # Accumulators
-    rgb_correct_1 = 0
-    rgb_correct_5 = 0
-    flow_correct_1 = 0
-    flow_correct_5 = 0
+    rgb_c1, rgb_c5 = 0, 0
+    flow_c1, flow_c5 = 0, 0
+    fused_c1, fused_c5 = 0, 0
     total_processed = 0
     
     pbar = tqdm(loader, dynamic_ncols=True)
@@ -188,55 +183,96 @@ def main(args):
 
             b, n_views, c, t, h, w = batch_views.shape
             
-            # Input model: (Batch_Size * 30, C, T, H, W)
+            # Flatten inputs for batch processing
             flat_inputs = batch_views.view(b * n_views, c, t, h, w).to(device)
             batch_labels = batch_labels.to(device)
-
             flat_inputs = normalizer(flat_inputs)
 
             # --- INFERENCE ---
-            outputs = model(flat_inputs)
+            logits_rgb, logits_flow, _, _ = model(flat_inputs)
             
-            logits_rgb = outputs[0]  
-            logits_flow = outputs[1] 
-
-            # --- HÀM TÍNH ĐIỂM ---
-            def evaluate_branch(logits, labels, batch_size, num_views):
-                probs = F.softmax(logits, dim=1) 
-                probs = probs.view(batch_size, num_views, -1)
-                avg_probs = torch.mean(probs, dim=1) 
-                pred_1 = avg_probs.argmax(dim=1)
-                c1 = (pred_1 == labels).sum().item()
-                _, pred_5 = avg_probs.topk(5, dim=1)
-                c5 = labels.view(-1, 1).eq(pred_5).sum().item()
-                return c1, c5
-
-            # Tính điểm
-            r_c1, r_c5 = evaluate_branch(logits_rgb, batch_labels, b, n_views)
-            rgb_correct_1 += r_c1
-            rgb_correct_5 += r_c5
+            # --- VIEW AGGREGATION (Softmax per view then Average) ---
+            # RGB
+            probs_rgb_views = F.softmax(logits_rgb, dim=1).view(b, n_views, -1)
+            avg_probs_rgb = torch.mean(probs_rgb_views, dim=1) # (B, 400)
             
-            f_c1, f_c5 = evaluate_branch(logits_flow, batch_labels, b, n_views)
-            flow_correct_1 += f_c1
-            flow_correct_5 += f_c5
+            # Flow
+            probs_flow_views = F.softmax(logits_flow, dim=1).view(b, n_views, -1)
+            avg_probs_flow = torch.mean(probs_flow_views, dim=1) # (B, 400)
+
+            # --- 1. Evaluate RGB & Flow independently ---
+            # RGB Metrics
+            pred_rgb_1 = avg_probs_rgb.argmax(dim=1)
+            rgb_c1 += (pred_rgb_1 == batch_labels).sum().item()
+            _, pred_rgb_5 = avg_probs_rgb.topk(5, dim=1)
+            rgb_c5 += batch_labels.view(-1, 1).eq(pred_rgb_5).sum().item()
+
+            # Flow Metrics
+            pred_flow_1 = avg_probs_flow.argmax(dim=1)
+            flow_c1 += (pred_flow_1 == batch_labels).sum().item()
+            _, pred_flow_5 = avg_probs_flow.topk(5, dim=1)
+            flow_c5 += batch_labels.view(-1, 1).eq(pred_flow_5).sum().item()
+
+            # --- 2. ADVANCED FUSION LOGIC (Conditional Confidence) ---
+            # Lấy max score để kiểm tra độ tự tin
+            conf_rgb, _ = avg_probs_rgb.max(dim=1)
+            conf_flow, _ = avg_probs_flow.max(dim=1)
+            
+            final_preds_1 = []
+            final_preds_5_list = []
+
+            for i in range(b):
+                # CASE 1: RGB rất tự tin -> Tin RGB
+                if conf_rgb[i] > args.conf_thresh:
+                    final_preds_1.append(pred_rgb_1[i])
+                    final_preds_5_list.append(pred_rgb_5[i])
+                
+                # CASE 2: Flow rất tự tin -> Tin Flow
+                elif conf_flow[i] > args.conf_thresh:
+                    final_preds_1.append(pred_flow_1[i])
+                    final_preds_5_list.append(pred_flow_5[i])
+                
+                # CASE 3: Cả 2 đều không chắc -> Weighted Average
+                else:
+                    # Hợp nhất xác suất
+                    mixed_prob = (args.rgb_weight * avg_probs_rgb[i]) + ((1.0 - args.rgb_weight) * avg_probs_flow[i])
+                    
+                    # Top-1 Mixed
+                    final_preds_1.append(mixed_prob.argmax())
+                    
+                    # Top-5 Mixed
+                    _, p5 = mixed_prob.topk(5)
+                    final_preds_5_list.append(p5)
+
+            # Stack lại thành Tensor để tính toán
+            final_preds_1 = torch.stack(final_preds_1)
+            final_preds_5 = torch.stack(final_preds_5_list)
+
+            fused_c1 += (final_preds_1 == batch_labels).sum().item()
+            fused_c5 += batch_labels.view(-1, 1).eq(final_preds_5).sum().item()
 
             total_processed += b
             
-            rgb_acc = rgb_correct_1 / total_processed * 100
-            flow_acc = flow_correct_1 / total_processed * 100
-            pbar.set_description(f"RGB_Top1: {rgb_acc:.2f}% | Flow_Top1: {flow_acc:.2f}%")
+            # --- Update Progress Bar ---
+            pbar.set_description(
+                f"RGB:{rgb_c1/total_processed*100:.1f}% | "
+                f"Flow:{flow_c1/total_processed*100:.1f}% | "
+                f"FUSED:{fused_c1/total_processed*100:.1f}%"
+            )
 
-    # In kết quả
+    # --- FINAL REPORT ---
+    def print_acc(name, c1, c5, total):
+        acc1 = c1 / total * 100
+        acc5 = c5 / total * 100
+        print(f"{name:<15} | Top-1: {acc1:.2f}% | Top-5: {acc5:.2f}%")
+
     print(f"\n🏆 FINAL RESULT (Kinetics-400 30-Views)")
-    print("-" * 50)
-    print(f"📸 RGB BRANCH:")
-    print(f"   - Top-1: {rgb_correct_1 / total_processed * 100:.2f}%")
-    print(f"   - Top-5: {rgb_correct_5 / total_processed * 100:.2f}%")
-    print("-" * 50)
-    print(f"🌊 HALLUCINATED FLOW BRANCH:")
-    print(f"   - Top-1: {flow_correct_1 / total_processed * 100:.2f}%")
-    print(f"   - Top-5: {flow_correct_5 / total_processed * 100:.2f}%")
-    print("=" * 50)
+    print("=" * 60)
+    print_acc("📸 RGB Only", rgb_c1, rgb_c5, total_processed)
+    print_acc("🌊 Flow Only", flow_c1, flow_c5, total_processed)
+    print("-" * 60)
+    print_acc("🔥 FUSION", fused_c1, fused_c5, total_processed)
+    print("=" * 60)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -244,13 +280,17 @@ if __name__ == "__main__":
     parser.add_argument('--test_list', type=str, required=True)
     parser.add_argument('--weights', type=str, required=True)
     
-    # Defaults cho K400 
+    # Eval settings
     parser.add_argument('--batch_size', type=int, default=4)
     parser.add_argument('--workers', type=int, default=8)
     parser.add_argument('--clip_len', type=int, default=13)
     parser.add_argument('--sampling_rate', type=int, default=6)
-    parser.add_argument('--resize_short', type=int, default=224) # Lưu ý: Train 224 thì Eval cũng nên 224
-    parser.add_argument('--crop_size', type=int, default=224)    # Lưu ý: Train 224 thì Eval cũng nên 224
+    parser.add_argument('--resize_short', type=int, default=224)
+    parser.add_argument('--crop_size', type=int, default=224)
+    
+    # Fusion Hyperparameters
+    parser.add_argument('--conf_thresh', type=float, default=0.8, help='Ngưỡng tự tin để chọn nhánh (0.0-1.0)')
+    parser.add_argument('--rgb_weight', type=float, default=0.5, help='Trọng số cho RGB khi mix (0.0-1.0)')
     
     args = parser.parse_args()
     main(args)

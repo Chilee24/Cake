@@ -270,8 +270,6 @@ def main(args):
     # 2. Losses
     criterion_cls = nn.CrossEntropyLoss().to(device)
     
-criterion_cls = nn.CrossEntropyLoss().to(device)
-    
     if args.distill_type == 'mgd':
         logging.info(f"👉 Using MGD Loss with alpha={args.alpha_distill}")
         criterion_distill = MGDLoss3D(192, 192, alpha_mgd=args.alpha_distill, lambda_mgd=0.3).to(device) # Nhớ lambda 0.3 nhé
@@ -499,7 +497,7 @@ if __name__ == "__main__":
     parser.add_argument('--stride', type=int, default=6, help="Temporal sampling stride (default: 6)")
     
     # Config Distill
-   parser.add_argument('--distill_type', type=str, default='mgd', choices=['mgd', 'mse', 'embed', 'cosine'])
+    parser.add_argument('--distill_type', type=str, default='mgd', choices=['mgd', 'mse', 'embed', 'cosine'])
     parser.add_argument('--alpha_distill', type=float, default=1.0)
     
     parser.add_argument('--freeze_rgb', action='store_true')

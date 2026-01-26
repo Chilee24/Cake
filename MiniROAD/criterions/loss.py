@@ -116,97 +116,75 @@ class MultiLabelQueueInfoNCELoss(nn.Module):
         return loss.mean()
 
 @CRITERIONS.register('CONTRASTIVE')
-class SupConUnifiedClassLoss(nn.Module):
+class StandardMultiLabelQueueInfoNCELoss(nn.Module):
     def __init__(self, cfg):
-        super(SupConUnifiedClassLoss, self).__init__()
+        super(StandardMultiLabelQueueInfoNCELoss, self).__init__()
         self.T = cfg.get("temperature", 0.07)
-        # Các tham số BG không còn dùng đến trong logic này nữa
-        # nhưng vẫn giữ để tránh lỗi khi load config
-        self.bg_class_idx = cfg.get("bg_class_idx", 0)
 
     def forward(self, output_dict, targets_multihot):
         """
-        ABLATION VERSION: Gom cụm tất cả (Unified Clustering)
-        - Coi BG là 1 class bình thường.
-        - BG kéo BG.
-        - Không có Bias đẩy BG và Action ra xa.
+        Gom tất cả các class (bao gồm Nền) theo logic SupCon chuẩn:
+        - Cùng nhãn => Kéo gần.
+        - Khác nhãn => Đẩy xa.
         """
-        # 1. UNPACK
-        if 'q_cls' in output_dict:
-            q = output_dict['q_cls']
-        else:
-            q = output_dict['q_core']
-            
-        k = output_dict['k_cls']       # [B, D]
+        q = output_dict['q_cls'] # [B, D]
+        k = output_dict['k_cls'] # [B, D]
         queues = output_dict['queues'] # [C, D, K]
         
         B, D = q.shape
         num_classes, _, K = queues.shape
         device = q.device
 
-        # 2. FLATTEN QUEUE
+        # 1. FLATTEN QUEUE
         # [C, D, K] -> [D, C*K]
         queue_flat = queues.permute(0, 2, 1).reshape(-1, D).T.clone().detach()
         
-        # [C*K] -> [0,0...0, 1,1...1, ..., 30,30...30]
+        # Tạo ID cho queue: [0,0..., 1,1..., ..., 20,20...]
         queue_bucket_ids = torch.arange(num_classes, device=device).unsqueeze(1).repeat(1, K).view(-1)
 
-        # 3. TÍNH LOGITS
+        # 2. TÍNH LOGITS
+        # A. Positive Teacher (q vs k)
+        sim_pos = torch.einsum('nc,nc->n', [q, k]).unsqueeze(-1) / self.T
         
-        # A. Positive Teacher (q . k) -> [B, 1]
-        l_pos = torch.einsum('nc,nc->n', [q, k]).unsqueeze(-1)
+        # B. Queue Contrast (q vs All Queue)
+        sim_queue = torch.mm(q, queue_flat) / self.T
         
-        # B. Queue Contrast (q . queue) -> [B, C*K]
-        l_queue = torch.mm(q, queue_flat)
+        # 3. TẠO MASK POSITIVE (Logic SupCon Chuẩn)
+        # Bất kỳ ai trong Queue có cùng nhãn với Anchor đều là Positive
+        # Kể cả đó là nhãn Nền (Background)
         
-        # GỘP LOGITS: [B, 1 + C*K]
-        logits = torch.cat([l_pos, l_queue], dim=1)
-        logits /= self.T
-
-        # 4. TẠO MASK POSITIVE (Logic Unified)
-        
-        # A. Cột 0 (Teacher): Luôn là Positive
-        mask_pos_teacher = torch.ones(B, 1, device=device)
-        
-        # B. Cột Queue:
-        # Chiếu vector Target lên Bucket IDs
-        # Bất kể là Action hay BG, cứ trùng nhãn là KÉO.
-        # Ví dụ: Anchor là BG -> Kéo tất cả BG trong Queue lại gần.
+        # Lấy nhãn từ target dựa trên ID của bucket
         mask_queue_pos = targets_multihot[:, queue_bucket_ids]
         mask_queue_pos = (mask_queue_pos > 0.5).float()
 
-        # [REMOVED] Rule 1: Anchor BG không kéo ai -> ĐÃ BỎ
-        # [REMOVED] Rule 2: Bias Phạt -> ĐÃ BỎ
-        # [REMOVED] Rule 3: Ignore cặp BG-BG -> ĐÃ BỎ
+        # --- ĐÃ XÓA: Logic phạt Nền (Bias) và logic Ignore Nền ---
+        # Bây giờ Background cư xử y hệt Action:
+        # Background Anchor sẽ coi Background trong Queue là bạn (Positive).
 
-        # 5. TỔNG HỢP MASK
-        mask_pos_final = torch.cat([mask_pos_teacher, mask_queue_pos], dim=1)
+        # 4. TỔNG HỢP LOGITS
+        # [B, 1 + C*K]
+        logits = torch.cat([sim_pos, sim_queue], dim=1)
         
-        # Không còn Ignore (trừ khi bạn muốn ignore chính bản thân nó trong queue, 
-        # nhưng ở đây ta dùng Teacher làm Positive chính nên queue coi như negative sample set mở rộng)
-        mask_ignore_final = torch.zeros_like(logits, dtype=torch.bool)
+        # Mask Positive (Cột 0 là Teacher luôn = 1)
+        mask_teacher = torch.ones(B, 1, device=device)
+        mask_pos_final = torch.cat([mask_teacher, mask_queue_pos], dim=1)
 
-        # 6. TÍNH SUPCON LOSS
-        
+        # 5. TÍNH LOSS (SupCon)
+        # Numerical stability
         logits_max, _ = torch.max(logits, dim=1, keepdim=True)
         logits = logits - logits_max.detach()
         
-        # Mask Ignore (nếu có, ở đây là toàn False)
-        logits = logits.masked_fill(mask_ignore_final, -1e9)
         exp_logits = torch.exp(logits)
         
-        # Mẫu số: Tổng exp của tất cả
+        # Mẫu số: Tổng exp của TẤT CẢ (Pos + Neg)
         denominator = exp_logits.sum(1, keepdim=True)
         
         log_prob = logits - torch.log(denominator + 1e-8)
         
-        # Tính Mean Loss trên các cặp Positive
-        mask_sum = mask_pos_final.sum(1)
-        mean_log_prob_pos = (mask_pos_final * log_prob).sum(1) / (mask_sum + 1e-8)
+        # Loss = - Mean(LogProb của các cặp Positive)
+        loss = -(log_prob * mask_pos_final).sum(1) / (mask_pos_final.sum(1) + 1e-8)
         
-        loss = - mean_log_prob_pos.mean()
-        
-        return loss
+        return loss.mean()
 
 @CRITERIONS.register('FOCAL')
 class FocalOadLoss(nn.Module):
@@ -225,7 +203,7 @@ class FocalOadLoss(nn.Module):
         super(FocalOadLoss, self).__init__()
         self.reduction = reduction
         self.gamma = cfg.get('focal_gamma', 2.0)
-        self.alpha = cfg.get('focal_alpha', 0.25) 
+        self.alpha = cfg.get('focal_alpha', 0.5) 
 
     def forward(self, out_dict, target):
         """

@@ -153,6 +153,7 @@ class ContrastiveOADDataset(data.Dataset):
 
 @DATA_LAYERS.register("THUMOS")
 @DATA_LAYERS.register("TVSERIES")
+@DATA_LAYERS.register("DASHCAM")
 class THUMOSDataset(data.Dataset):
     
     def __init__(self, cfg, mode='train'):

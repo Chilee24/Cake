@@ -20,3 +20,5 @@ data/
 output/
 output_contrastive/
 output_cls/
+output_dashcam/
+old_checkpoint/
