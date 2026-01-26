@@ -1,6 +1,0 @@
-{'task': 'ADVERSARIAL_CONTRASTIVE', 'model': 'CONTRASTIVE_MROAD', 'data_name': 'THUMOS', 'loss': 'ADVERSARIAL_CONTRASTIVE', 'output_path': './output_phase1', 'device': 'cuda', 'root_path': 'D:/project/DashCam/data/thumos14', 'video_list_path': 'data_info/video_list.json', 'feature_pretrained': 'kinetics', 'rgb_type': 'rgb_kinetics_resnet50', 'flow_type': 'flow_kinetics_bninception', 'annotation_type': 'target_perframe', 'window_size': 128, 'stride': 4, 'embedding_dim': 2048, 'hidden_dim': 1024, 'num_layers': 1, 'dropout': 0.2, 'num_classes': 22, 'no_rgb': False, 'no_flow': False, 'contrastive_dim': 128, 'queue_size': 65536, 'momentum': 0.999, 'temperature': 0.07, 'gen_dropout': 0.25, 'optimizer': 'AdamW', 'batch_size': 16, 'test_batch_size': 16, 'num_epoch': 50, 'lr': 0.001, 'backbone_lr': 0.0001, 'weight_decay': 0.0001, 'num_workers': 0, 'pretrained_backbone_path': 'D:\\project\\DashCam\\MiniROAD\\THUMOS_Kinetics.pth', 'config': 'D:\\project\\DashCam\\MiniROAD\\configs\\miniroad_thumos_kinetics_phase1.yaml', 'amp': False, 'tensorboard': False}
-Total Params: 37.2 M
-START TRAINING: Warmup Gen for 10 epochs.
-Epoch 1 [Warmup] | Gen Loss: -0.2272 | Encoder Frozen
-Epoch 2 [Warmup] | Gen Loss: -0.2120 | Encoder Frozen
-Epoch 3 [Warmup] | Gen Loss: -0.1995 | Encoder Frozen

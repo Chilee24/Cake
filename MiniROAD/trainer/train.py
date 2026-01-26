@@ -96,6 +96,7 @@ def train_one_epoch(trainloader, model, criterion, optimizer, scaler, epoch, wri
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
             optimizer.step()
+            scheduler.step() if scheduler != None else None
 
         epoch_loss += loss.item()
         if writer != None:
