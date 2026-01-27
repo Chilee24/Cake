@@ -6,9 +6,9 @@ metric: 'AP'
 optimizer: 'AdamW'
 device: 'cuda'
 feature_pretrained: 'kinetics'
-root_path: 'D:\project\DashCam\data\thumos14'
-rgb_type: 'rgb_kinetics_resnet50'
-flow_type: 'flow_kinetics_bninception'
+root_path: 'D:\project\DashCam\data\cake_5'
+rgb_type: 'rgb_kinetics_x3d'
+flow_type: 'flow_kinetics_x3d'
 annotation_type: 'target_perframe'
 video_list_path: 'data_info/video_list.json'
 output_path: './output_cls'
@@ -27,8 +27,8 @@ num_layers: 1
 stride: 4
 no_flow: False
 no_rgb: False
-contrastive_path: 'D:\project\Cake\MiniROAD\output_contrastive\Contrastive_CONTRASTIVE_MROAD_THUMOS_rgb_kinetics_resnet50_6\best_model.pth'
-freeze_backbone: True
+#contrastive_path: 'D:\project\Cake\MiniROAD\output_contrastive\Contrastive_CONTRASTIVE_MROAD_THUMOS_rgb_kinetics_resnet50_6\best_model.pth'
+#freeze_backbone: True
 bg_class_idx: 0
 warmup_epoch: 1
 warmup_factor: 0.1

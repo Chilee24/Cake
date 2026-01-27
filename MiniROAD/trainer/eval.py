@@ -15,43 +15,42 @@ from tqdm import tqdm
 @EVAL.register("CONTRASTIVE")
 class ContrastiveEvaluator:
     def __init__(self, cfg):
-        self.num_classes = cfg['num_classes']
+        self.num_classes = cfg.get('num_classes', 20)
         self.bg_class_idx = cfg.get('bg_class_idx', 0)
-        self.k_neighbors = 50 
-        self.calc_batch_size = 1024 
         
-        # [MỚI] Tỉ lệ mẫu muốn đo CAC (5%)
-        self.sample_ratio = 0.05
+        # Tính trên 5% tổng số mẫu (Bao gồm cả Nền)
+        self.top_k_ratio = 0.05 
+        
+        self.calc_batch_size = 1024 
 
     def __call__(self, val_loader, model, criterion, epoch, writer=None):
         model.eval()
         total_loss = 0.0
         
         all_features = []
-        all_targets = [] # Lưu vector multi-hot
+        all_targets = [] 
 
         with torch.no_grad():
-            # --- BƯỚC 1: THU THẬP FEATURE (Chạy hết để tính Loss chính xác) ---
-            pbar = tqdm(val_loader, desc=f"Epoch:{epoch} Validating")
+            pbar = tqdm(val_loader, desc=f"Epoch:{epoch} Validating CAC (All Classes)")
             for batch_data in pbar:
+                # 1. Move data
                 rgb_anchor = batch_data['rgb_anchor'].cuda(non_blocking=True)
                 flow_anchor = batch_data['flow_anchor'].cuda(non_blocking=True)
                 labels = batch_data['labels'].cuda(non_blocking=True)
-                
-                # [MỚI] Lấy targets_multihot
                 targets_multihot = batch_data['targets_multihot'].cuda(non_blocking=True)
                 
                 labels_per_frame = batch_data.get('labels_per_frame', None)
                 if labels_per_frame is not None:
                     labels_per_frame = labels_per_frame.cuda(non_blocking=True)
 
+                # 2. Forward
                 out_dict = model(rgb_anchor, flow_anchor, labels, labels_per_frame=labels_per_frame)
                 
-                # Tính Loss chuẩn trên toàn bộ tập Valid
+                # 3. Loss
                 loss = criterion(out_dict, targets_multihot)
                 total_loss += loss.item()
 
-                # Lưu lại Feature Teacher và Target Multi-hot
+                # 4. Lưu Feature
                 k_cls = out_dict['k_cls'].detach().cpu() 
                 targets_cpu = targets_multihot.detach().cpu()
                 
@@ -59,85 +58,87 @@ class ContrastiveEvaluator:
                 all_targets.append(targets_cpu)
 
         # Gộp thành Tensor lớn
-        all_features = torch.cat(all_features, dim=0) # [N, D]
-        all_targets = torch.cat(all_targets, dim=0)   # [N, C]
+        all_features = torch.cat(all_features, dim=0) # [Total, D]
+        all_targets = torch.cat(all_targets, dim=0)   # [Total, C]
         
-        n_total = all_features.shape[0]
         avg_loss = total_loss / len(val_loader)
-
-        # --- BƯỚC 2: SAMPLING 5% DATASET ---
-        n_subset = int(n_total * self.sample_ratio)
-        if n_subset < 100: n_subset = n_total # Safety check cho dataset quá nhỏ
-            
-        print(f"--> [Val] Sampling {self.sample_ratio*100}% data ({n_subset}/{n_total}) for CAC...")
         
-        # Lấy index ngẫu nhiên
-        perm_indices = torch.randperm(n_total)[:n_subset]
+        # --- [THAY ĐỔI] KHÔNG CÒN LỌC BACKGROUND NỮA ---
+        # Tính trực tiếp trên toàn bộ dataset
+        num_samples = all_features.shape[0]
         
-        feat_subset = all_features[perm_indices]
-        target_subset = all_targets[perm_indices]
+        print(f"\n--> [Val Info] Calculating CAC on ALL {num_samples} samples (Including Background).")
 
-        # --- BƯỚC 3: TÍNH CAC TRÊN SUBSET ---
-        cac_score = self._calculate_cac_multilabel(feat_subset, target_subset)
+        # --- TÍNH CAC ---
+        cac_score = 0.0
+        if num_samples > 0:
+            cac_score = self._calculate_dynamic_k_cac(all_features, all_targets)
 
-        print(f"--> [Val Epoch {epoch}] Loss: {avg_loss:.4f} | CAC (Action, 5% Sample): {cac_score:.2f}%")
+        print(f"--> [Val Epoch {epoch}] Loss: {avg_loss:.4f} | CAC (Global Top {self.top_k_ratio*100}%): {cac_score:.2f}%")
 
         if writer is not None:
             writer.add_scalar("Val/Loss", avg_loss, epoch)
-            writer.add_scalar("Val/CAC_Action", cac_score, epoch)
+            writer.add_scalar(f"Val/CAC_Global", cac_score, epoch)
 
         return cac_score
 
-    def _calculate_cac_multilabel(self, features, targets):
+    def _calculate_dynamic_k_cac(self, features, targets):
         """
-        Tính CAC Multi-label. (Logic y hệt bài trước)
+        Logic overlap vẫn giữ nguyên:
+        - Nếu Query là BG -> Tìm thấy BG khác là ĐÚNG (+1).
+        - Nếu Query là Action -> Tìm thấy Action cùng loại là ĐÚNG (+1).
         """
-        # 1. Lọc bỏ Background
-        is_bg = targets[:, self.bg_class_idx] > 0.5
-        is_action = ~is_bg
-        action_indices = torch.where(is_action)[0]
+        num_samples = features.shape[0]
         
-        if len(action_indices) == 0: return 0.0
+        # 1. Tính K động trên tổng số mẫu
+        k_dynamic = int(num_samples * self.top_k_ratio)
+        k_dynamic = max(1, k_dynamic)
+        k_dynamic = min(k_dynamic, num_samples - 1)
+        
+        print(f"--> [CAC Logic] Finding Top-{k_dynamic} neighbors per sample.")
 
-        act_feats = features[action_indices]
-        act_targets = targets[action_indices]
-        
-        num_actions = act_feats.shape[0]
         correct_counts = 0
-        total_neighbors = 0
+        total_neighbors_checked = 0
         
-        # Chuyển lên GPU để tính toán
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        act_feats = act_feats.to(device)
-        act_targets = act_targets.to(device)
+        
+        # Normalize
+        features = F.normalize(features, p=2, dim=1).to(device)
+        targets = targets.to(device)
 
         # Chunking loop
-        for i in range(0, num_actions, self.calc_batch_size):
-            end = min(i + self.calc_batch_size, num_actions)
-            query_feat = act_feats[i:end]
-            query_target = act_targets[i:end]
+        for i in range(0, num_samples, self.calc_batch_size):
+            end = min(i + self.calc_batch_size, num_samples)
             
-            # Cosine Sim
-            sim_matrix = torch.mm(query_feat, act_feats.T)
+            query_feat = features[i:end]
+            query_target = targets[i:end]
+            
+            # Cosine Similarity
+            sim_matrix = torch.mm(query_feat, features.T)
             
             # Top-K
-            _, topk_indices = torch.topk(sim_matrix, k=self.k_neighbors + 1, dim=1)
+            _, topk_indices = torch.topk(sim_matrix, k=k_dynamic + 1, dim=1)
             neighbor_indices = topk_indices[:, 1:] 
             
             # Check Overlap
-            neighbor_targets = act_targets[neighbor_indices]
+            neighbor_targets = targets[neighbor_indices]
             q_target_expanded = query_target.unsqueeze(1)
-            overlap = (q_target_expanded * neighbor_targets).sum(dim=-1)
+            
+            # Logic này đúng cho cả Background:
+            # Query=[1,0..] (BG) gặp Neighbor=[1,0..] (BG) -> Overlap=1 -> Correct
+            overlap = (q_target_expanded * neighbor_targets).sum(dim=-1) 
             
             is_correct = (overlap > 0).float()
+            
             correct_counts += is_correct.sum().item()
-            total_neighbors += (is_correct.numel())
+            total_neighbors_checked += is_correct.numel() 
             
         if device == 'cuda':
-            del act_feats, act_targets
+            del features, targets
             torch.cuda.empty_cache()
             
-        return (correct_counts / total_neighbors) * 100.0
+        if total_neighbors_checked == 0: return 0.0
+        return (correct_counts / total_neighbors_checked) * 100.0
 
 @EVAL.register("OAD")
 class Evaluate(nn.Module):
