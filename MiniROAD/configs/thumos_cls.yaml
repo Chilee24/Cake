@@ -33,4 +33,4 @@ bg_class_idx: 0
 warmup_epoch: 1
 warmup_factor: 0.1
 warmup_method: 'linear'
-focal_alpha: 0.75
+focal_alpha: 0.5

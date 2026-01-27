@@ -17,15 +17,9 @@ class ContrastiveEvaluator:
     def __init__(self, cfg):
         self.num_classes = cfg.get('num_classes', 20)
         self.bg_class_idx = cfg.get('bg_class_idx', 0)
-        
-        # Top 5% số lượng mẫu
-        self.top_k_ratio = 0.05 
         self.calc_batch_size = 1024 
-
-        # [CONFIG MỚI]
-        # True: Chỉ dùng Action để làm Query (hỏi).
-        # False: Dùng cả Nền để làm Query.
-        # Lưu ý: Dù True hay False thì "Hàng xóm" luôn tìm trong TOÀN BỘ tập dữ liệu.
+        
+        # True: Chỉ lấy Action làm Query (khuyên dùng)
         self.eval_action_only = cfg.get('eval_action_only', True)
 
     def __call__(self, val_loader, model, criterion, epoch, writer=None):
@@ -38,127 +32,116 @@ class ContrastiveEvaluator:
         with torch.no_grad():
             pbar = tqdm(val_loader, desc=f"Epoch:{epoch} Validating CAC")
             for batch_data in pbar:
-                # 1. Move data
                 rgb_anchor = batch_data['rgb_anchor'].cuda(non_blocking=True)
                 flow_anchor = batch_data['flow_anchor'].cuda(non_blocking=True)
                 labels = batch_data['labels'].cuda(non_blocking=True)
                 targets_multihot = batch_data['targets_multihot'].cuda(non_blocking=True)
                 
-                labels_per_frame = batch_data.get('labels_per_frame', None)
-                if labels_per_frame is not None:
-                    labels_per_frame = labels_per_frame.cuda(non_blocking=True)
-
-                # 2. Forward
-                out_dict = model(rgb_anchor, flow_anchor, labels, labels_per_frame=labels_per_frame)
+                # Forward
+                out_dict = model(rgb_anchor, flow_anchor, labels)
                 
-                # 3. Loss
                 loss = criterion(out_dict, targets_multihot)
                 total_loss += loss.item()
 
-                # 4. Collect
-                k_cls = out_dict['k_cls'].detach().cpu() 
-                targets_cpu = targets_multihot.detach().cpu()
-                
-                all_features.append(k_cls)
-                all_targets.append(targets_cpu)
+                all_features.append(out_dict['k_cls'].detach().cpu())
+                all_targets.append(targets_multihot.detach().cpu())
 
-        # Gộp Tensor (Đây là GALLERY - Kho tìm kiếm)
-        gallery_features = torch.cat(all_features, dim=0) # [Total, D]
-        gallery_targets = torch.cat(all_targets, dim=0)   # [Total, C]
-        
+        # Gộp Tensor (GALLERY)
+        gallery_features = torch.cat(all_features, dim=0) 
+        gallery_targets = torch.cat(all_targets, dim=0)   
         avg_loss = total_loss / len(val_loader)
         
-        # --- BƯỚC CHUẨN BỊ QUERY ---
+        # --- BƯỚC TỰ ĐỘNG TÍNH K (AUTO-K) ---
+        # 1. Đếm số lượng mẫu của từng lớp Action (bỏ qua BG)
+        # targets_multihot: [N, Num_Classes]
+        # Sum theo trục dọc -> Số mẫu mỗi class
+        class_counts = gallery_targets.sum(dim=0) # [Num_Classes]
+        
+        # Bỏ qua lớp nền
+        action_counts = []
+        for c in range(self.num_classes):
+            if c != self.bg_class_idx:
+                cnt = class_counts[c].item()
+                if cnt > 0: action_counts.append(cnt)
+        
+        if len(action_counts) > 0:
+            # OPTION 1: Khắt khe (Dùng class ít nhất)
+            # k_auto = min(action_counts)
+            
+            # OPTION 2: Hợp lý (Dùng trung vị - Median) -> Khuyên dùng
+            k_auto = int(np.median(action_counts))
+            
+            # Giới hạn K không quá nhỏ (ít nhất 5) và không quá lớn (max 50)
+            # Tại sao max 50? Vì trong các metric Retrieval chuẩn, người ta thường đo R@10, R@50.
+            k_auto = max(5, min(k_auto, 50))
+        else:
+            k_auto = 5 # Fallback
+            
+        print(f"\n--> [Auto-K Logic] Action Class Samples: Min={min(action_counts)}, Median={int(np.median(action_counts))}, Max={max(action_counts)}")
+        print(f"--> [Auto-K Logic] Selected K = {k_auto} for evaluation.")
+
+        # --- CHUẨN BỊ QUERY ---
         if self.eval_action_only:
-            # Lọc: Chỉ lấy Action làm Query
             is_bg = gallery_targets[:, self.bg_class_idx] > 0.5
             query_features = gallery_features[~is_bg]
             query_targets = gallery_targets[~is_bg]
             mode_str = "Action Only"
         else:
-            # Lấy tất cả làm Query
             query_features = gallery_features
             query_targets = gallery_targets
             mode_str = "All Samples"
 
-        num_queries = query_features.shape[0]
-        num_gallery = gallery_features.shape[0]
-
-        print(f"\n--> [Val Info] Queries: {num_queries} ({mode_str}) | Search Space: {num_gallery} (All)")
-
-        # --- TÍNH CAC ---
+        # --- TÍNH CAC VỚI K ĐÃ CHỌN ---
         cac_score = 0.0
-        if num_queries > 0:
-            # Truyền cả Query và Gallery riêng biệt
+        if query_features.shape[0] > 0:
             cac_score = self._calculate_cac_matrix(
                 query_features, query_targets, 
-                gallery_features, gallery_targets
+                gallery_features, gallery_targets,
+                k_fixed=k_auto
             )
 
-        print(f"--> [Val Epoch {epoch}] Loss: {avg_loss:.4f} | CAC ({mode_str} -> Global): {cac_score:.2f}%")
+        print(f"--> [Val Epoch {epoch}] Loss: {avg_loss:.4f} | CAC (K={k_auto}): {cac_score:.2f}%")
 
         if writer is not None:
             writer.add_scalar("Val/Loss", avg_loss, epoch)
-            writer.add_scalar(f"Val/CAC_{mode_str.replace(' ', '_')}", cac_score, epoch)
+            writer.add_scalar(f"Val/CAC_K{k_auto}", cac_score, epoch)
 
         return cac_score
 
-    def _calculate_cac_matrix(self, q_feats, q_targets, g_feats, g_targets):
+    def _calculate_cac_matrix(self, q_feats, q_targets, g_feats, g_targets, k_fixed):
         """
-        Tính CAC bất đối xứng: 
-        - Query: Tập con (ví dụ chỉ Action)
-        - Gallery: Tập toàn bộ (bao gồm cả Nền)
+        Tính CAC với K cố định
         """
         num_queries = q_feats.shape[0]
-        num_gallery = g_feats.shape[0]
+        # Đảm bảo K không lớn hơn Gallery - 1
+        k_val = min(k_fixed, g_feats.shape[0] - 1)
         
-        # Tính K dựa trên GALLERY size (Không gian tìm kiếm)
-        # Vì chúng ta muốn tìm Top 5% trong đám đông hỗn loạn
-        k_dynamic = int(num_gallery * self.top_k_ratio)
-        k_dynamic = max(1, k_dynamic)
-        k_dynamic = min(k_dynamic, num_gallery - 1)
-        
-        print(f"--> [CAC Logic] Finding Top-{k_dynamic} neighbors in Global Space ({num_gallery} samples).")
-
         correct_counts = 0
         total_neighbors_checked = 0
         
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
         
-        # Normalize cả 2
         q_feats = F.normalize(q_feats, p=2, dim=1).to(device)
-        g_feats = F.normalize(g_feats, p=2, dim=1).to(device) # Gallery lên GPU
-        
+        g_feats = F.normalize(g_feats, p=2, dim=1).to(device)
         q_targets = q_targets.to(device)
         g_targets = g_targets.to(device)
 
-        # Chunking loop cho QUERY
         for i in range(0, num_queries, self.calc_batch_size):
             end = min(i + self.calc_batch_size, num_queries)
+            curr_q_feat = q_feats[i:end]
+            curr_q_target = q_targets[i:end]
             
-            # Batch Query hiện tại
-            curr_q_feat = q_feats[i:end]      # [Batch, D]
-            curr_q_target = q_targets[i:end]  # [Batch, C]
-            
-            # 1. Cosine Sim: Query (Batch) vs Gallery (ALL)
-            # [Batch, N_Gallery]
+            # 1. Sim
             sim_matrix = torch.mm(curr_q_feat, g_feats.T)
             
-            # 2. Tìm K+1 người gần nhất
-            # Lưu ý: Vì Query là tập con của Gallery, nên mẫu gần nhất (Top-1)
-            # CHẮC CHẮN là chính nó (Sim ~ 1.0). Ta vẫn lấy K+1 và bỏ thằng đầu tiên.
-            _, topk_indices = torch.topk(sim_matrix, k=k_dynamic + 1, dim=1)
+            # 2. Top-K
+            _, topk_indices = torch.topk(sim_matrix, k=k_val + 1, dim=1)
+            neighbor_indices = topk_indices[:, 1:] 
             
-            # Bỏ cột đầu tiên (Self-match)
-            neighbor_indices = topk_indices[:, 1:] # [Batch, K_dynamic]
+            # 3. Check
+            neighbor_targets = g_targets[neighbor_indices]
+            curr_q_target_expanded = curr_q_target.unsqueeze(1)
             
-            # 3. Kiểm tra nhãn hàng xóm
-            # Lấy nhãn từ GALLERY
-            neighbor_targets = g_targets[neighbor_indices] # [Batch, K_dynamic, C]
-            
-            curr_q_target_expanded = curr_q_target.unsqueeze(1) # [Batch, 1, C]
-            
-            # Overlap Logic
             overlap = (curr_q_target_expanded * neighbor_targets).sum(dim=-1)
             is_correct = (overlap > 0).float()
             
